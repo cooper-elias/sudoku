@@ -16,7 +16,7 @@
 </style>
 <script>
 // Version check: on launch, fetch the live file and hard-reload if it's newer.
-const APP_VERSION = "3";
+const APP_VERSION = "4";
 (function () {
   fetch(location.pathname, { cache: "no-store" })
     .then(function (r) { return r.text(); })
@@ -171,6 +171,30 @@ const formatTime = (s) => {
   return `${m}:${sec.toString().padStart(2, "0")}`;
 };
 
+// Persistence: works in the hosted/standalone version; the try/catch makes it
+// a silent no-op in environments where storage is unavailable.
+const SAVE_KEY = "sudoku-save-v1";
+const storage = {
+  get() {
+    try {
+      const raw = window.localStorage.getItem(SAVE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  },
+  set(data) {
+    try {
+      window.localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    } catch (e) {}
+  },
+  clear() {
+    try {
+      window.localStorage.removeItem(SAVE_KEY);
+    } catch (e) {}
+  },
+};
+
 // ---------------- Styles ----------------
 
 const C = {
@@ -305,8 +329,71 @@ function Sudoku() {
   }, []);
 
   useEffect(() => {
-    newGame("Easy");
+    const saved = storage.get();
+    if (saved && saved.cells && saved.solution) {
+      setDifficulty(saved.difficulty || "Easy");
+      setCells(
+        saved.cells.map((c) => ({
+          value: c.value || 0,
+          given: !!c.given,
+          notes: c.notes || [],
+          checked: c.checked || null,
+        }))
+      );
+      setSolution(saved.solution);
+      setSeconds(saved.seconds || 0);
+      setMistakes(saved.mistakes || 0);
+      if (saved.settings) setSettings(saved.settings);
+      setAutoCandidates(!!saved.autoCandidates);
+      setStatus("paused"); // resume deliberately: board blurred, tap play
+    } else {
+      newGame("Easy");
+    }
   }, [newGame]);
+
+  // Keep a snapshot ref so save handlers never see stale state
+  const saveRef = useRef(null);
+  saveRef.current = {
+    cells,
+    solution,
+    difficulty,
+    seconds,
+    mistakes,
+    settings,
+    autoCandidates,
+  };
+
+  const saveNow = useCallback(() => {
+    const s = saveRef.current;
+    if (!s.cells || !s.solution) return;
+    storage.set(s);
+  }, []);
+
+  // Save continuously while playing; clear the save once solved
+  useEffect(() => {
+    if (status === "won") {
+      storage.clear();
+    } else if (status === "playing" || status === "paused") {
+      saveNow();
+    }
+  }, [cells, seconds, status, settings, autoCandidates, saveNow]);
+
+  // Auto-pause (and save) when the app is backgrounded or closed
+  useEffect(() => {
+    const onHidden = () => {
+      saveNow();
+      setStatus((s) => (s === "playing" ? "paused" : s));
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") onHidden();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onHidden);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onHidden);
+    };
+  }, [saveNow]);
 
   useEffect(() => {
     if (status !== "playing") return;
