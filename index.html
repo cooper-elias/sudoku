@@ -16,7 +16,7 @@
 </style>
 <script>
 // Version check: on launch, fetch the live file and hard-reload if it's newer.
-const APP_VERSION = "4";
+const APP_VERSION = "5";
 (function () {
   fetch(location.pathname, { cache: "no-store" })
     .then(function (r) { return r.text(); })
@@ -174,6 +174,7 @@ const formatTime = (s) => {
 // Persistence: works in the hosted/standalone version; the try/catch makes it
 // a silent no-op in environments where storage is unavailable.
 const SAVE_KEY = "sudoku-save-v1";
+const PREFS_KEY = "sudoku-prefs-v1";
 const storage = {
   get() {
     try {
@@ -191,6 +192,22 @@ const storage = {
   clear() {
     try {
       window.localStorage.removeItem(SAVE_KEY);
+    } catch (e) {}
+  },
+};
+
+const prefsStore = {
+  get() {
+    try {
+      const raw = window.localStorage.getItem(PREFS_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  },
+  set(data) {
+    try {
+      window.localStorage.setItem(PREFS_KEY, JSON.stringify(data));
     } catch (e) {}
   },
 };
@@ -328,7 +345,15 @@ function Sudoku() {
     }, 50);
   }, []);
 
+  const prefsLoadedRef = useRef(false);
+
   useEffect(() => {
+    const savedPrefs = prefsStore.get();
+    if (savedPrefs) {
+      if (savedPrefs.settings) setSettings(savedPrefs.settings);
+      setAutoCandidates(!!savedPrefs.autoCandidates);
+    }
+    prefsLoadedRef.current = true;
     const saved = storage.get();
     if (saved && saved.cells && saved.solution) {
       setDifficulty(saved.difficulty || "Easy");
@@ -343,13 +368,17 @@ function Sudoku() {
       setSolution(saved.solution);
       setSeconds(saved.seconds || 0);
       setMistakes(saved.mistakes || 0);
-      if (saved.settings) setSettings(saved.settings);
-      setAutoCandidates(!!saved.autoCandidates);
       setStatus("paused"); // resume deliberately: board blurred, tap play
     } else {
       newGame("Easy");
     }
   }, [newGame]);
+
+  // Persist settings whenever they change (survives wins and new games)
+  useEffect(() => {
+    if (!prefsLoadedRef.current) return;
+    prefsStore.set({ settings, autoCandidates });
+  }, [settings, autoCandidates]);
 
   // Keep a snapshot ref so save handlers never see stale state
   const saveRef = useRef(null);
