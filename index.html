@@ -1,0 +1,1091 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="Sudoku" />
+<meta name="theme-color" content="#ffffff" />
+<title>Sudoku</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #fff; overscroll-behavior: none; }
+  * { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+  #root { height: 100%; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ---------------- Puzzle engine ----------------
+
+const shuffle = (arr) => {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+
+const rowOf = (i) => Math.floor(i / 9);
+const colOf = (i) => i % 9;
+const boxOf = (i) => Math.floor(rowOf(i) / 3) * 3 + Math.floor(colOf(i) / 3);
+
+const PEERS = (() => {
+  const peers = [];
+  for (let i = 0; i < 81; i++) {
+    const set = new Set();
+    for (let j = 0; j < 81; j++) {
+      if (j === i) continue;
+      if (rowOf(j) === rowOf(i) || colOf(j) === colOf(i) || boxOf(j) === boxOf(i)) {
+        set.add(j);
+      }
+    }
+    peers.push([...set]);
+  }
+  return peers;
+})();
+
+const candidatesFor = (board, i) => {
+  const used = new Set();
+  for (const p of PEERS[i]) {
+    if (board[p] !== 0) used.add(board[p]);
+  }
+  const result = [];
+  for (let v = 1; v <= 9; v++) {
+    if (!used.has(v)) result.push(v);
+  }
+  return result;
+};
+
+const fillBoard = (board) => {
+  let bestIndex = -1;
+  let bestCands = null;
+  for (let i = 0; i < 81; i++) {
+    if (board[i] !== 0) continue;
+    const cands = candidatesFor(board, i);
+    if (bestCands === null || cands.length < bestCands.length) {
+      bestIndex = i;
+      bestCands = cands;
+      if (cands.length <= 1) break;
+    }
+  }
+  if (bestIndex === -1) return true;
+  for (const v of shuffle(bestCands)) {
+    board[bestIndex] = v;
+    if (fillBoard(board)) return true;
+    board[bestIndex] = 0;
+  }
+  return false;
+};
+
+const countSolutions = (board, limit = 2) => {
+  let bestIndex = -1;
+  let bestCands = null;
+  for (let i = 0; i < 81; i++) {
+    if (board[i] !== 0) continue;
+    const cands = candidatesFor(board, i);
+    if (cands.length === 0) return 0;
+    if (bestCands === null || cands.length < bestCands.length) {
+      bestIndex = i;
+      bestCands = cands;
+      if (cands.length === 1) break;
+    }
+  }
+  if (bestIndex === -1) return 1;
+  let count = 0;
+  for (const v of bestCands) {
+    board[bestIndex] = v;
+    count += countSolutions(board, limit - count);
+    board[bestIndex] = 0;
+    if (count >= limit) break;
+  }
+  return count;
+};
+
+const DIFFICULTIES = {
+  Easy: 41,
+  Medium: 34,
+  Hard: 29,
+  Expert: 25,
+};
+
+const generatePuzzle = (difficulty) => {
+  const clues = DIFFICULTIES[difficulty];
+  const board = Array(81).fill(0);
+  fillBoard(board);
+  const solution = [...board];
+  const target = 81 - clues;
+  let removed = 0;
+  for (const pos of shuffle([...Array(81).keys()])) {
+    if (removed >= target) break;
+    const backup = board[pos];
+    board[pos] = 0;
+    if (countSolutions([...board]) !== 1) {
+      board[pos] = backup;
+    } else {
+      removed++;
+    }
+  }
+  return { puzzle: board, solution };
+};
+
+// ---------------- Helpers ----------------
+
+const makeCells = (puzzle) =>
+  puzzle.map((v) => ({ value: v, given: v !== 0, notes: [] }));
+
+const cloneCells = (cells) =>
+  cells.map((c) => ({ value: c.value, given: c.given, notes: [...c.notes] }));
+
+const formatTime = (s) => {
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+};
+
+// ---------------- Styles ----------------
+
+const C = {
+  ink: "#121212",
+  line: "#BFC1C4",
+  boxLine: "#88898C",
+  givenBg: "#E7E7E9",
+  peer: "#D4D7DC",
+  sameNum: "#C2CBD8",
+  selected: "#F0A03C",
+  entry: "#1A5FB4",
+  error: "#C33C3C",
+  errorBg: "#F3C9C9",
+  noteInk: "#4B5563",
+  keyBg: "#EBEBED",
+  keyBorder: "#CDCED1",
+  divider: "#E3E3E5",
+};
+
+const SANS = "'Helvetica Neue','Segoe UI',Arial,system-ui,sans-serif";
+const SERIF = "Georgia,'Times New Roman',serif";
+
+const IconQuestion = ({ size = 24 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+    <circle cx="12" cy="12" r="10" stroke={C.ink} strokeWidth="1.8" />
+    <path
+      d="M9.6 9.2c.2-1.4 1.2-2.2 2.5-2.2 1.4 0 2.4.9 2.4 2.1 0 1-.5 1.5-1.4 2.1-.9.6-1.2 1-1.2 1.9v.4"
+      stroke={C.ink}
+      strokeWidth="1.8"
+      strokeLinecap="round"
+    />
+    <circle cx="11.9" cy="17" r="1.1" fill={C.ink} />
+  </svg>
+);
+
+const IconGear = ({ size = 24 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+    <path
+      d="M12 8.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8Zm8.4 3.4c0 .5 0 .9-.1 1.4l2 1.6-1.9 3.3-2.4-.9c-.7.6-1.5 1-2.3 1.3l-.4 2.6h-3.8l-.4-2.6c-.8-.3-1.6-.7-2.3-1.3l-2.4.9-1.9-3.3 2-1.6a8 8 0 0 1 0-2.8l-2-1.6 1.9-3.3 2.4.9c.7-.6 1.5-1 2.3-1.3l.4-2.6h3.8l.4 2.6c.8.3 1.6.7 2.3 1.3l2.4-.9 1.9 3.3-2 1.6c.1.5.1.9.1 1.4Z"
+      stroke={C.ink}
+      strokeWidth="1.6"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+const IconDots = ({ size = 24 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill={C.ink}>
+    <circle cx="5" cy="12" r="1.7" />
+    <circle cx="12" cy="12" r="1.7" />
+    <circle cx="19" cy="12" r="1.7" />
+  </svg>
+);
+
+const IconChevron = ({ size = 26 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+    <path
+      d="M15 4.5 7.5 12 15 19.5"
+      stroke={C.ink}
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+const IconPause = ({ size = 15 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill={C.ink}>
+    <rect x="6" y="4" width="4.5" height="16" rx="1" />
+    <rect x="13.5" y="4" width="4.5" height="16" rx="1" />
+  </svg>
+);
+
+const IconPlay = ({ size = 15, color = C.ink }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
+    <path d="M7 4.5v15l13-7.5L7 4.5Z" />
+  </svg>
+);
+
+// ---------------- Component ----------------
+
+function Sudoku() {
+  const [difficulty, setDifficulty] = useState("Easy");
+  const [cells, setCells] = useState(null);
+  const [solution, setSolution] = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [candidateMode, setCandidateMode] = useState(false);
+  const [autoCandidates, setAutoCandidates] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [mistakes, setMistakes] = useState(0);
+  const [seconds, setSeconds] = useState(0);
+  const [status, setStatus] = useState("loading");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [dims, setDims] = useState({
+    w: typeof window !== "undefined" ? window.innerWidth : 390,
+    h: typeof window !== "undefined" ? window.innerHeight : 750,
+  });
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
+  useEffect(() => {
+    const onResize = () =>
+      setDims({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const newGame = useCallback((diff) => {
+    setStatus("loading");
+    setMenuOpen(false);
+    setMoreOpen(false);
+    setTimeout(() => {
+      const { puzzle, solution } = generatePuzzle(diff);
+      setDifficulty(diff);
+      setCells(makeCells(puzzle));
+      setSolution(solution);
+      setSelected(null);
+      setCandidateMode(false);
+      setHistory([]);
+      setMistakes(0);
+      setSeconds(0);
+      setStatus("playing");
+    }, 50);
+  }, []);
+
+  useEffect(() => {
+    newGame("Easy");
+  }, [newGame]);
+
+  useEffect(() => {
+    if (status !== "playing") return;
+    const id = setInterval(() => setSeconds((s) => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [status]);
+
+  const checkWin = (nextCells) => {
+    for (let i = 0; i < 81; i++) {
+      if (nextCells[i].value !== solution[i]) return false;
+    }
+    return true;
+  };
+
+  const inputNumber = useCallback(
+    (n) => {
+      if (statusRef.current !== "playing" || selected === null) return;
+      setCells((prev) => {
+        const cell = prev[selected];
+        if (cell.given) return prev;
+        const next = cloneCells(prev);
+        setHistory((h) => [...h, cloneCells(prev)]);
+        const target = next[selected];
+        if (candidateMode) {
+          if (target.value !== 0) return prev;
+          target.notes = target.notes.includes(n)
+            ? target.notes.filter((x) => x !== n)
+            : [...target.notes, n].sort();
+        } else {
+          if (target.value === n) {
+            target.value = 0;
+          } else {
+            target.value = n;
+            target.notes = [];
+            if (n === solution[selected]) {
+              for (const p of PEERS[selected]) {
+                next[p].notes = next[p].notes.filter((x) => x !== n);
+              }
+            } else {
+              setMistakes((m) => m + 1);
+            }
+          }
+        }
+        if (checkWin(next)) setStatus("won");
+        return next;
+      });
+    },
+    [selected, candidateMode, solution]
+  );
+
+  const erase = useCallback(() => {
+    if (statusRef.current !== "playing" || selected === null) return;
+    setCells((prev) => {
+      const cell = prev[selected];
+      if (cell.given || (cell.value === 0 && cell.notes.length === 0)) return prev;
+      setHistory((h) => [...h, cloneCells(prev)]);
+      const next = cloneCells(prev);
+      next[selected].value = 0;
+      next[selected].notes = [];
+      return next;
+    });
+  }, [selected]);
+
+  const undo = useCallback(() => {
+    if (statusRef.current !== "playing") return;
+    setHistory((h) => {
+      if (h.length === 0) return h;
+      setCells(h[h.length - 1]);
+      return h.slice(0, -1);
+    });
+  }, []);
+
+  const hint = useCallback(() => {
+    if (statusRef.current !== "playing") return;
+    setMoreOpen(false);
+    setCells((prev) => {
+      let idx = selected;
+      if (idx === null || prev[idx].given || prev[idx].value === solution[idx]) {
+        const empties = [];
+        for (let i = 0; i < 81; i++) {
+          if (prev[i].value !== solution[i]) empties.push(i);
+        }
+        if (empties.length === 0) return prev;
+        idx = empties[Math.floor(Math.random() * empties.length)];
+      }
+      setHistory((h) => [...h, cloneCells(prev)]);
+      const next = cloneCells(prev);
+      next[idx].value = solution[idx];
+      next[idx].notes = [];
+      for (const p of PEERS[idx]) {
+        next[p].notes = next[p].notes.filter((x) => x !== solution[idx]);
+      }
+      setSelected(idx);
+      if (checkWin(next)) setStatus("won");
+      return next;
+    });
+  }, [selected, solution]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (statusRef.current !== "playing") return;
+      if (e.key >= "1" && e.key <= "9") {
+        inputNumber(parseInt(e.key, 10));
+      } else if (e.key === "Backspace" || e.key === "Delete") {
+        erase();
+      } else if (e.key === "n" || e.key === "N") {
+        setCandidateMode((m) => !m);
+      } else if (e.key.startsWith("Arrow")) {
+        e.preventDefault();
+        setSelected((s) => {
+          const cur = s === null ? 0 : s;
+          if (e.key === "ArrowUp") return cur - 9 >= 0 ? cur - 9 : cur;
+          if (e.key === "ArrowDown") return cur + 9 < 81 ? cur + 9 : cur;
+          if (e.key === "ArrowLeft") return colOf(cur) > 0 ? cur - 1 : cur;
+          if (e.key === "ArrowRight") return colOf(cur) < 8 ? cur + 1 : cur;
+          return cur;
+        });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [inputNumber, erase]);
+
+  // ---------------- Sizing ----------------
+  // All proportions measured off the reference: on a 393pt-wide phone the keys
+  // are 60x36.7pt wide rectangles with ~6pt gaps, and the whole control
+  // cluster is 88.2% the width of the board, bottom-weighted on the screen.
+  const UTIL_H = 40;
+  const HEADER_H = 46;
+
+  const computeLayout = (boardW) => {
+    const controlsW = Math.round(boardW * 0.882);
+    const gapX = Math.max(4, Math.round(controlsW * 0.018));
+    const keyW = Math.floor((controlsW - 4 * gapX) / 5);
+    const keyH = Math.round(keyW * 0.61);
+    const rowGap = Math.max(8, Math.round(controlsW * 0.036));
+    const clusterH = keyH /*toggle*/ + 10 + keyH * 2 + rowGap + 15 + 26;
+    return { controlsW, gapX, keyW, keyH, rowGap, clusterH };
+  };
+
+  // Two-pass: try full width, shrink the board if the viewport is short.
+  let boardSize = Math.floor(Math.min(dims.w * 0.93, 520));
+  let L = computeLayout(boardSize);
+  const maxBoard = dims.h - UTIL_H - HEADER_H - L.clusterH - 34;
+  if (boardSize > maxBoard) {
+    boardSize = Math.max(220, Math.floor(maxBoard));
+    L = computeLayout(boardSize);
+  }
+  const cellSize = boardSize / 9;
+  const cellFont = Math.floor(cellSize * 0.6);
+  const noteFont = Math.max(8, Math.floor(cellSize * 0.24));
+  const keyFont = Math.round(L.keyH * 0.65);
+
+  // ---------------- Render ----------------
+
+  if (status === "loading" || !cells) {
+    return (
+      <div
+        style={{
+          height: "100dvh",
+          background: "#FFFFFF",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: SANS,
+          color: C.ink,
+        }}
+      >
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontFamily: SERIF, fontSize: 28 }}>Sudoku</div>
+          <div style={{ marginTop: 8, color: C.noteInk, fontSize: 14 }}>
+            Building your puzzle…
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const boardValues = cells.map((c) => c.value);
+  const selectedValue =
+    selected !== null && cells[selected].value !== 0
+      ? cells[selected].value
+      : null;
+
+  const cellBg = (i) => {
+    if (i === selected) return C.selected;
+    if (
+      selectedValue !== null &&
+      cells[i].value === selectedValue &&
+      i !== selected
+    )
+      return C.sameNum;
+    if (cells[i].value !== 0 && cells[i].value !== solution[i] && !cells[i].given)
+      return C.errorBg;
+    if (
+      selected !== null &&
+      (rowOf(i) === rowOf(selected) ||
+        colOf(i) === colOf(selected) ||
+        boxOf(i) === boxOf(selected))
+    )
+      return C.peer;
+    if (cells[i].value !== 0) return C.givenBg;
+    return "#FFFFFF";
+  };
+
+  const cellColor = (i) => {
+    const c = cells[i];
+    if (c.given) return C.ink;
+    if (c.value !== 0 && c.value !== solution[i]) return C.error;
+    return C.entry;
+  };
+
+  const border = (i) => {
+    const r = rowOf(i);
+    const c = colOf(i);
+    const thin = `1px solid ${C.line}`;
+    const bold = `2px solid ${C.boxLine}`;
+    return {
+      borderTop: r === 0 ? "none" : r % 3 === 0 ? bold : thin,
+      borderLeft: c === 0 ? "none" : c % 3 === 0 ? bold : thin,
+    };
+  };
+
+  const notesToShow = (i) => {
+    if (cells[i].value !== 0) return [];
+    if (autoCandidates) return candidatesFor(boardValues, i);
+    return cells[i].notes;
+  };
+
+  const iconBtn = {
+    background: "none",
+    border: "none",
+    cursor: "pointer",
+    padding: 4,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  };
+
+  const keyStyle = {
+    background: C.keyBg,
+    border: `1px solid ${C.keyBorder}`,
+    borderRadius: 6,
+    width: L.keyW,
+    height: L.keyH,
+    fontSize: keyFont,
+    fontWeight: 500,
+    color: C.ink,
+    cursor: "pointer",
+    fontFamily: SANS,
+    lineHeight: 1,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 0,
+    boxSizing: "border-box",
+  };
+
+  return (
+    <div
+      style={{
+        height: "100dvh",
+        overflow: "hidden",
+        background: "#FFFFFF",
+        fontFamily: SANS,
+        color: C.ink,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        userSelect: "none",
+        WebkitUserSelect: "none",
+      }}
+    >
+      {/* Utility row */}
+      <div
+        style={{
+          width: "100%",
+          height: UTIL_H,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "0 14px",
+          boxSizing: "border-box",
+          borderBottom: `1px solid ${C.divider}`,
+          position: "relative",
+          flexShrink: 0,
+        }}
+      >
+        <button style={iconBtn} aria-label="Back">
+          <IconChevron size={22} />
+        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <button style={iconBtn} aria-label="Help" onClick={() => setHelpOpen(true)}>
+            <IconQuestion size={21} />
+          </button>
+          <button style={iconBtn} aria-label="New game" onClick={() => setMenuOpen(true)}>
+            <IconGear size={21} />
+          </button>
+          <button style={iconBtn} aria-label="More" onClick={() => setMoreOpen((o) => !o)}>
+            <IconDots size={21} />
+          </button>
+        </div>
+
+        {moreOpen && (
+          <div
+            style={{
+              position: "absolute",
+              top: "100%",
+              right: 10,
+              background: "#FFFFFF",
+              border: `1px solid ${C.divider}`,
+              borderRadius: 10,
+              boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
+              zIndex: 50,
+              overflow: "hidden",
+              minWidth: 150,
+            }}
+          >
+            {[
+              { label: "Hint", action: hint },
+              {
+                label: "New game",
+                action: () => {
+                  setMoreOpen(false);
+                  setMenuOpen(true);
+                },
+              },
+            ].map((item) => (
+              <button
+                key={item.label}
+                onClick={item.action}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  background: "none",
+                  border: "none",
+                  padding: "11px 16px",
+                  fontSize: 15,
+                  fontFamily: SANS,
+                  color: C.ink,
+                  cursor: "pointer",
+                }}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Header */}
+      <div
+        style={{
+          height: HEADER_H,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 30,
+          flexShrink: 0,
+        }}
+      >
+        <button
+          onClick={() => setMenuOpen(true)}
+          style={{
+            background: "none",
+            border: "none",
+            fontFamily: SERIF,
+            fontSize: 24,
+            color: C.ink,
+            cursor: "pointer",
+            padding: 0,
+          }}
+        >
+          {difficulty}
+        </button>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontVariantNumeric: "tabular-nums",
+            fontSize: 21,
+          }}
+        >
+          <span>{formatTime(seconds)}</span>
+          <button
+            onClick={() =>
+              setStatus((s) => (s === "playing" ? "paused" : "playing"))
+            }
+            aria-label={status === "paused" ? "Resume" : "Pause"}
+            style={{ ...iconBtn, padding: 2 }}
+          >
+            {status === "paused" ? <IconPlay /> : <IconPause />}
+          </button>
+        </div>
+      </div>
+
+      {/* Board */}
+      <div style={{ position: "relative", flexShrink: 0 }}>
+        <div
+          style={{
+            width: boardSize,
+            height: boardSize,
+            display: "grid",
+            gridTemplateColumns: "repeat(9, minmax(0, 1fr))",
+            gridTemplateRows: "repeat(9, minmax(0, 1fr))",
+            border: `3px solid ${C.ink}`,
+            boxSizing: "content-box",
+            background: "#FFFFFF",
+            filter: status === "paused" ? "blur(8px)" : "none",
+          }}
+        >
+          {cells.map((cell, i) => {
+            const notes = notesToShow(i);
+            return (
+              <div
+                key={i}
+                onClick={() => status === "playing" && setSelected(i)}
+                style={{
+                  ...border(i),
+                  background: cellBg(i),
+                  position: "relative",
+                  minWidth: 0,
+                  minHeight: 0,
+                  overflow: "hidden",
+                  cursor: "pointer",
+                }}
+              >
+                {cell.value !== 0 && status !== "paused" && (
+                  <span
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: cellFont,
+                      fontWeight: 500,
+                      color: cellColor(i),
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {cell.value}
+                  </span>
+                )}
+                {cell.value === 0 && notes.length > 0 && status !== "paused" && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      inset: 1,
+                      display: "grid",
+                      gridTemplateColumns: "repeat(3, 1fr)",
+                      gridTemplateRows: "repeat(3, 1fr)",
+                    }}
+                  >
+                    {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
+                      <div
+                        key={n}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: noteFont,
+                          color: C.noteInk,
+                          fontWeight: 500,
+                          lineHeight: 1,
+                        }}
+                      >
+                        {notes.includes(n) ? n : ""}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {status === "paused" && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <button
+              onClick={() => setStatus("playing")}
+              style={{
+                background: C.ink,
+                border: "none",
+                borderRadius: 999,
+                width: 68,
+                height: 68,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+              }}
+              aria-label="Resume"
+            >
+              <IconPlay size={28} color="#FFFFFF" />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Flexible spacer: pushes controls toward the bottom (thumb zone).
+          The bottom spacer is ~2.5x this one, matching the reference layout. */}
+      <div style={{ flexGrow: 1, minHeight: 14 }} />
+
+      {/* Mode toggle + Undo */}
+      <div
+        style={{
+          width: L.controlsW,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "stretch",
+          flexShrink: 0,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            border: `1px solid ${C.keyBorder}`,
+            borderRadius: 5,
+            overflow: "hidden",
+            height: L.keyH,
+            boxSizing: "border-box",
+          }}
+        >
+          {["Normal", "Candidate"].map((label) => {
+            const active = (label === "Normal") === !candidateMode;
+            return (
+              <button
+                key={label}
+                onClick={() => setCandidateMode(label === "Candidate")}
+                style={{
+                  background: active ? C.ink : "#FFFFFF",
+                  color: active ? "#FFFFFF" : C.noteInk,
+                  border: "none",
+                  padding: "0 20px",
+                  fontSize: 15,
+                  fontWeight: 500,
+                  cursor: "pointer",
+                  fontFamily: SANS,
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        <button
+          onClick={undo}
+          disabled={history.length === 0}
+          style={{
+            ...keyStyle,
+            fontSize: 15,
+            fontWeight: 600,
+            color: history.length === 0 ? "#9A9CA1" : C.ink,
+            cursor: history.length === 0 ? "default" : "pointer",
+          }}
+        >
+          Undo
+        </button>
+      </div>
+
+      <div style={{ height: 10, flexShrink: 0 }} />
+
+      {/* Number pad: wide flat keys, 1-5 / 6-9 + erase */}
+      <div
+        style={{
+          width: L.controlsW,
+          display: "grid",
+          gridTemplateColumns: "repeat(5, 1fr)",
+          columnGap: L.gapX,
+          rowGap: L.rowGap,
+          flexShrink: 0,
+        }}
+      >
+        {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
+          <button key={n} style={keyStyle} onClick={() => inputNumber(n)}>
+            {n}
+          </button>
+        ))}
+        <button
+          style={{ ...keyStyle, fontSize: Math.round(L.keyH * 0.6) }}
+          onClick={erase}
+          aria-label="Erase"
+        >
+          ✕
+        </button>
+      </div>
+
+      {/* Auto candidate mode */}
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 9,
+          marginTop: 15,
+          fontSize: 15,
+          cursor: "pointer",
+          fontFamily: SANS,
+          flexShrink: 0,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={autoCandidates}
+          onChange={(e) => setAutoCandidates(e.target.checked)}
+          style={{ width: 18, height: 18, accentColor: C.ink }}
+        />
+        Auto Candidate Mode
+      </label>
+
+      {/* Bottom spacer: keeps the pad in the thumb zone, not glued to the edge */}
+      <div style={{ flexGrow: 2.5, minHeight: 12 }} />
+
+      {/* Help modal */}
+      {helpOpen && (
+        <div
+          onClick={() => setHelpOpen(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(20,24,32,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 40,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#FFFFFF",
+              borderRadius: 16,
+              padding: 24,
+              width: "min(86vw, 360px)",
+              fontSize: 15,
+              lineHeight: 1.5,
+            }}
+          >
+            <div style={{ fontFamily: SERIF, fontSize: 22, marginBottom: 10 }}>
+              How to play
+            </div>
+            <p style={{ margin: "0 0 10px" }}>
+              Fill the grid so every row, column, and 3×3 box contains the
+              numbers 1 through 9 exactly once.
+            </p>
+            <p style={{ margin: "0 0 10px" }}>
+              Use Candidate mode to pencil in possibilities, or turn on Auto
+              Candidate Mode to see them computed for you. Tap a number key
+              twice to clear it from a cell.
+            </p>
+            <button
+              onClick={() => setHelpOpen(false)}
+              style={{
+                ...keyStyle,
+                width: "100%",
+                fontSize: 15,
+                marginTop: 6,
+              }}
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Difficulty menu */}
+      {menuOpen && (
+        <div
+          onClick={() => setMenuOpen(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(20,24,32,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 40,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#FFFFFF",
+              borderRadius: 16,
+              padding: 24,
+              width: "min(86vw, 340px)",
+            }}
+          >
+            <div style={{ fontFamily: SERIF, fontSize: 22, marginBottom: 4 }}>
+              New puzzle
+            </div>
+            <div style={{ fontSize: 13, color: C.noteInk, marginBottom: 16 }}>
+              Your current progress will be lost.
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {Object.keys(DIFFICULTIES).map((d) => (
+                <button
+                  key={d}
+                  onClick={() => newGame(d)}
+                  style={{
+                    ...keyStyle,
+                    width: "100%",
+                    fontSize: 15,
+                    background: d === difficulty ? C.peer : "#FFFFFF",
+                  }}
+                >
+                  {d}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setMenuOpen(false)}
+              style={{
+                ...keyStyle,
+                width: "100%",
+                marginTop: 12,
+                border: "none",
+                background: "none",
+                fontSize: 14,
+                color: C.noteInk,
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Win overlay */}
+      {status === "won" && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(20,24,32,0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 30,
+          }}
+        >
+          <div
+            style={{
+              background: "#FFFFFF",
+              borderRadius: 16,
+              padding: 28,
+              width: "min(86vw, 340px)",
+              textAlign: "center",
+            }}
+          >
+            <div style={{ fontSize: 40 }}>🎉</div>
+            <div style={{ fontFamily: SERIF, fontSize: 24, marginTop: 8 }}>
+              Solved!
+            </div>
+            <div style={{ fontSize: 14, color: C.noteInk, marginTop: 8 }}>
+              {difficulty} · {formatTime(seconds)} · {mistakes}{" "}
+              {mistakes === 1 ? "mistake" : "mistakes"}
+            </div>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+                marginTop: 20,
+              }}
+            >
+              <button
+                onClick={() => newGame(difficulty)}
+                style={{
+                  ...keyStyle,
+                  width: "100%",
+                  background: C.ink,
+                  color: "#FFFFFF",
+                  border: "none",
+                  fontSize: 15,
+                }}
+              >
+                New {difficulty} puzzle
+              </button>
+              <button
+                onClick={() => setMenuOpen(true)}
+                style={{ ...keyStyle, width: "100%", fontSize: 15 }}
+              >
+                Change difficulty
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Sudoku />);
+</script>
+</body>
+</html>
