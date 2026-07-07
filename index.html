@@ -246,6 +246,12 @@ function Sudoku() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState({
+    peers: true, // highlight row, column, and box of the selected cell
+    matches: true, // highlight cells with the same number as the selected cell
+    errors: true, // mark incorrect entries in red
+  });
   const [dims, setDims] = useState({
     w: typeof window !== "undefined" ? window.innerWidth : 390,
     h: typeof window !== "undefined" ? window.innerHeight : 750,
@@ -468,14 +474,21 @@ function Sudoku() {
   const cellBg = (i) => {
     if (i === selected) return C.selected;
     if (
+      settings.matches &&
       selectedValue !== null &&
       cells[i].value === selectedValue &&
       i !== selected
     )
       return C.sameNum;
-    if (cells[i].value !== 0 && cells[i].value !== solution[i] && !cells[i].given)
+    if (
+      settings.errors &&
+      cells[i].value !== 0 &&
+      cells[i].value !== solution[i] &&
+      !cells[i].given
+    )
       return C.errorBg;
     if (
+      settings.peers &&
       selected !== null &&
       (rowOf(i) === rowOf(selected) ||
         colOf(i) === colOf(selected) ||
@@ -489,7 +502,8 @@ function Sudoku() {
   const cellColor = (i) => {
     const c = cells[i];
     if (c.given) return C.ink;
-    if (c.value !== 0 && c.value !== solution[i]) return C.error;
+    if (settings.errors && c.value !== 0 && c.value !== solution[i])
+      return C.error;
     return C.entry;
   };
 
@@ -576,7 +590,7 @@ function Sudoku() {
           <button style={iconBtn} aria-label="Help" onClick={() => setHelpOpen(true)}>
             <IconQuestion size={21} />
           </button>
-          <button style={iconBtn} aria-label="New game" onClick={() => setMenuOpen(true)}>
+          <button style={iconBtn} aria-label="Settings" onClick={() => setSettingsOpen(true)}>
             <IconGear size={21} />
           </button>
           <button style={iconBtn} aria-label="More" onClick={() => setMoreOpen((o) => !o)}>
@@ -952,6 +966,131 @@ function Sudoku() {
               }}
             >
               Got it
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Settings */}
+      {settingsOpen && (
+        <div
+          onClick={() => setSettingsOpen(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(20,24,32,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 40,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#FFFFFF",
+              borderRadius: 16,
+              padding: 24,
+              width: "min(86vw, 340px)",
+            }}
+          >
+            <div style={{ fontFamily: SERIF, fontSize: 22, marginBottom: 16 }}>
+              Settings
+            </div>
+            {[
+              {
+                key: "peers",
+                label: "Highlight row, column & box",
+                hint: "Shades the areas that share the selected cell",
+              },
+              {
+                key: "matches",
+                label: "Highlight matching numbers",
+                hint: "Shades every cell with the selected number",
+              },
+              {
+                key: "errors",
+                label: "Show mistakes",
+                hint: "Marks incorrect entries in red",
+              },
+            ].map((opt) => {
+              const on = settings[opt.key];
+              return (
+                <button
+                  key={opt.key}
+                  onClick={() =>
+                    setSettings((s) => ({ ...s, [opt.key]: !s[opt.key] }))
+                  }
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 14,
+                    width: "100%",
+                    background: "none",
+                    border: "none",
+                    padding: "11px 0",
+                    cursor: "pointer",
+                    fontFamily: SANS,
+                    textAlign: "left",
+                  }}
+                >
+                  <span>
+                    <span
+                      style={{ display: "block", fontSize: 15, color: C.ink }}
+                    >
+                      {opt.label}
+                    </span>
+                    <span
+                      style={{
+                        display: "block",
+                        fontSize: 12,
+                        color: C.noteInk,
+                        marginTop: 2,
+                      }}
+                    >
+                      {opt.hint}
+                    </span>
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      flexShrink: 0,
+                      width: 46,
+                      height: 27,
+                      borderRadius: 999,
+                      background: on ? C.ink : "#C9CACD",
+                      position: "relative",
+                      transition: "background 0.15s",
+                    }}
+                  >
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: 2.5,
+                        left: on ? 22 : 3,
+                        width: 22,
+                        height: 22,
+                        borderRadius: "50%",
+                        background: "#FFFFFF",
+                        transition: "left 0.15s",
+                        boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+                      }}
+                    />
+                  </span>
+                </button>
+              );
+            })}
+            <button
+              onClick={() => setSettingsOpen(false)}
+              style={{
+                ...keyStyle,
+                width: "100%",
+                marginTop: 14,
+                fontSize: 15,
+              }}
+            >
+              Done
             </button>
           </div>
         </div>
