@@ -16,8 +16,7 @@
 </style>
 <script>
 // Version check: on launch, fetch the live file and hard-reload if it's newer.
-// This defeats the iOS home-screen app cache without any user action.
-const APP_VERSION = "2";
+const APP_VERSION = "3";
 (function () {
   fetch(location.pathname, { cache: "no-store" })
     .then(function (r) { return r.text(); })
@@ -27,7 +26,7 @@ const APP_VERSION = "2";
         location.replace(location.pathname + "?v=" + Date.now());
       }
     })
-    .catch(function () {}); // offline: just run the cached version
+    .catch(function () {});
 })();
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -156,10 +155,15 @@ const generatePuzzle = (difficulty) => {
 // ---------------- Helpers ----------------
 
 const makeCells = (puzzle) =>
-  puzzle.map((v) => ({ value: v, given: v !== 0, notes: [] }));
+  puzzle.map((v) => ({ value: v, given: v !== 0, notes: [], checked: null }));
 
 const cloneCells = (cells) =>
-  cells.map((c) => ({ value: c.value, given: c.given, notes: [...c.notes] }));
+  cells.map((c) => ({
+    value: c.value,
+    given: c.given,
+    notes: [...c.notes],
+    checked: c.checked || null,
+  }));
 
 const formatTime = (s) => {
   const m = Math.floor(s / 60);
@@ -266,7 +270,7 @@ function Sudoku() {
   const [settings, setSettings] = useState({
     peers: true, // highlight row, column, and box of the selected cell
     matches: true, // highlight cells with the same number as the selected cell
-    errors: true, // mark incorrect entries in red
+    errors: false, // mark incorrect entries in red as you type (off = check-based)
   });
   const [dims, setDims] = useState({
     w: typeof window !== "undefined" ? window.innerWidth : 390,
@@ -334,16 +338,15 @@ function Sudoku() {
         } else {
           if (target.value === n) {
             target.value = 0;
+            target.checked = null;
           } else {
             target.value = n;
             target.notes = [];
-            if (n === solution[selected]) {
-              for (const p of PEERS[selected]) {
-                next[p].notes = next[p].notes.filter((x) => x !== n);
-              }
-            } else {
-              setMistakes((m) => m + 1);
+            target.checked = null;
+            for (const p of PEERS[selected]) {
+              next[p].notes = next[p].notes.filter((x) => x !== n);
             }
+            if (n !== solution[selected]) setMistakes((m) => m + 1);
           }
         }
         if (checkWin(next)) setStatus("won");
@@ -362,6 +365,7 @@ function Sudoku() {
       const next = cloneCells(prev);
       next[selected].value = 0;
       next[selected].notes = [];
+      next[selected].checked = null;
       return next;
     });
   }, [selected]);
@@ -392,6 +396,7 @@ function Sudoku() {
       const next = cloneCells(prev);
       next[idx].value = solution[idx];
       next[idx].notes = [];
+      next[idx].checked = "correct";
       for (const p of PEERS[idx]) {
         next[p].notes = next[p].notes.filter((x) => x !== solution[idx]);
       }
@@ -400,6 +405,85 @@ function Sudoku() {
       return next;
     });
   }, [selected, solution]);
+
+  const checkCell = useCallback(() => {
+    if (statusRef.current !== "playing" || selected === null) return;
+    setMoreOpen(false);
+    setCells((prev) => {
+      const cell = prev[selected];
+      if (cell.given || cell.value === 0) return prev;
+      const next = cloneCells(prev);
+      next[selected].checked =
+        cell.value === solution[selected] ? "correct" : "wrong";
+      return next;
+    });
+  }, [selected, solution]);
+
+  const checkPuzzle = useCallback(() => {
+    if (statusRef.current !== "playing") return;
+    setMoreOpen(false);
+    setCells((prev) => {
+      const next = cloneCells(prev);
+      for (let i = 0; i < 81; i++) {
+        if (!next[i].given && next[i].value !== 0) {
+          next[i].checked = next[i].value === solution[i] ? "correct" : "wrong";
+        }
+      }
+      return next;
+    });
+  }, [solution]);
+
+  const revealCell = useCallback(() => {
+    if (statusRef.current !== "playing" || selected === null) return;
+    setMoreOpen(false);
+    setCells((prev) => {
+      if (prev[selected].given) return prev;
+      setHistory((h) => [...h, cloneCells(prev)]);
+      const next = cloneCells(prev);
+      next[selected].value = solution[selected];
+      next[selected].notes = [];
+      next[selected].checked = "correct";
+      for (const p of PEERS[selected]) {
+        next[p].notes = next[p].notes.filter((x) => x !== solution[selected]);
+      }
+      if (checkWin(next)) setStatus("won");
+      return next;
+    });
+  }, [selected, solution]);
+
+  const revealPuzzle = useCallback(() => {
+    if (statusRef.current !== "playing") return;
+    setMoreOpen(false);
+    setCells((prev) => {
+      setHistory((h) => [...h, cloneCells(prev)]);
+      const next = cloneCells(prev);
+      for (let i = 0; i < 81; i++) {
+        if (!next[i].given) {
+          if (next[i].value !== solution[i]) next[i].checked = "correct";
+          next[i].value = solution[i];
+          next[i].notes = [];
+        }
+      }
+      setStatus("won");
+      return next;
+    });
+  }, [solution]);
+
+  const resetPuzzle = useCallback(() => {
+    setMoreOpen(false);
+    setCells((prev) =>
+      prev.map((c) =>
+        c.given
+          ? { ...c, notes: [], checked: null }
+          : { value: 0, given: false, notes: [], checked: null }
+      )
+    );
+    setHistory([]);
+    setMistakes(0);
+    setSeconds(0);
+    setSelected(null);
+    setStatus("playing");
+  }, []);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -511,16 +595,18 @@ function Sudoku() {
         boxOf(i) === boxOf(selected))
     )
       return C.peer;
-    if (cells[i].value !== 0) return C.givenBg;
+    if (cells[i].given) return C.givenBg;
     return "#FFFFFF";
   };
 
   const cellColor = (i) => {
     const c = cells[i];
     if (c.given) return C.ink;
+    if (c.checked === "wrong") return C.error;
+    if (c.checked === "correct") return C.entry;
     if (settings.errors && c.value !== 0 && c.value !== solution[i])
       return C.error;
-    return C.entry;
+    return C.ink;
   };
 
   const border = (i) => {
@@ -631,13 +717,11 @@ function Sudoku() {
           >
             {[
               { label: "Hint", action: hint },
-              {
-                label: "New game",
-                action: () => {
-                  setMoreOpen(false);
-                  setMenuOpen(true);
-                },
-              },
+              { label: "Check Cell", action: checkCell },
+              { label: "Check Puzzle", action: checkPuzzle },
+              { label: "Reveal Cell", action: revealCell },
+              { label: "Reveal Puzzle", action: revealPuzzle },
+              { label: "Reset Puzzle", action: resetPuzzle, divider: true },
             ].map((item) => (
               <button
                 key={item.label}
@@ -648,8 +732,9 @@ function Sudoku() {
                   textAlign: "left",
                   background: "none",
                   border: "none",
-                  padding: "11px 16px",
-                  fontSize: 15,
+                  borderTop: item.divider ? `1px solid ${C.divider}` : "none",
+                  padding: "12px 18px",
+                  fontSize: 16,
                   fontFamily: SANS,
                   color: C.ink,
                   cursor: "pointer",
@@ -757,6 +842,22 @@ function Sudoku() {
                     {cell.value}
                   </span>
                 )}
+                {cell.checked === "wrong" &&
+                  cell.value !== 0 &&
+                  status !== "paused" && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: "-12%",
+                        top: "50%",
+                        width: "124%",
+                        height: 2,
+                        background: C.error,
+                        transform: "rotate(-45deg)",
+                        pointerEvents: "none",
+                      }}
+                    />
+                  )}
                 {cell.value === 0 && notes.length > 0 && status !== "paused" && (
                   <div
                     style={{
@@ -1026,8 +1127,8 @@ function Sudoku() {
               },
               {
                 key: "errors",
-                label: "Show mistakes",
-                hint: "Marks incorrect entries in red",
+                label: "Show mistakes as you type",
+                hint: "Off by default — use Check Cell / Check Puzzle instead",
               },
             ].map((opt) => {
               const on = settings[opt.key];
