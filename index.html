@@ -16,7 +16,7 @@
 </style>
 <script>
 // Version check: on launch, fetch the live file and hard-reload if it's newer.
-const APP_VERSION = "13";
+const APP_VERSION = "14";
 (function () {
   fetch(location.pathname, { cache: "no-store" })
     .then(function (r) { return r.text(); })
@@ -966,30 +966,40 @@ const formatTime = (s) => {
 };
 
 // Persistence: works in the hosted/standalone version; the try/catch makes it
-// a silent no-op in environments where storage is unavailable.
-const SAVE_KEY = "sudoku-save-v1";
-const PREFS_KEY = "sudoku-prefs-v1";
+// a silent no-op in environments where storage is unavailable. One save slot
+// per difficulty so games can be switched between without losing progress.
+const SAVE_KEY = "sudoku-saves-v2";
+const LEGACY_SAVE_KEY = "sudoku-save-v1";
 const storage = {
-  get() {
+  getAll() {
     try {
       const raw = window.localStorage.getItem(SAVE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  },
+  setAll(data) {
+    try {
+      window.localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    } catch (e) {}
+  },
+  getLegacy() {
+    try {
+      const raw = window.localStorage.getItem(LEGACY_SAVE_KEY);
       return raw ? JSON.parse(raw) : null;
     } catch (e) {
       return null;
     }
   },
-  set(data) {
+  clearLegacy() {
     try {
-      window.localStorage.setItem(SAVE_KEY, JSON.stringify(data));
-    } catch (e) {}
-  },
-  clear() {
-    try {
-      window.localStorage.removeItem(SAVE_KEY);
+      window.localStorage.removeItem(LEGACY_SAVE_KEY);
     } catch (e) {}
   },
 };
 
+const PREFS_KEY = "sudoku-prefs-v1";
 const prefsStore = {
   get() {
     try {
@@ -1143,6 +1153,27 @@ function Sudoku() {
   }, []);
 
   const prefsLoadedRef = useRef(false);
+  const savesRef = useRef({});
+
+  const loadSlot = useCallback((slot, diff, nextStatus) => {
+    setDifficulty(diff);
+    setCells(
+      slot.cells.map((c) => ({
+        value: c.value || 0,
+        given: !!c.given,
+        notes: c.notes || [],
+        checked: c.checked || null,
+      }))
+    );
+    setSolution(slot.solution);
+    setSeconds(slot.seconds || 0);
+    setMistakes(slot.mistakes || 0);
+    setHistory([]);
+    setSelected(null);
+    setHintInfo(null);
+    setCandidateMode(false);
+    setStatus(nextStatus);
+  }, []);
 
   useEffect(() => {
     const savedPrefs = prefsStore.get();
@@ -1152,25 +1183,34 @@ function Sudoku() {
       setAutoCandidates(!!savedPrefs.autoCandidates);
     }
     prefsLoadedRef.current = true;
-    const saved = storage.get();
-    if (saved && saved.cells && saved.solution) {
-      setDifficulty(saved.difficulty || "Easy");
-      setCells(
-        saved.cells.map((c) => ({
-          value: c.value || 0,
-          given: !!c.given,
-          notes: c.notes || [],
-          checked: c.checked || null,
-        }))
-      );
-      setSolution(saved.solution);
-      setSeconds(saved.seconds || 0);
-      setMistakes(saved.mistakes || 0);
-      setStatus("paused"); // resume deliberately: board blurred, tap play
+
+    const saves = storage.getAll();
+    // Migrate the old single-slot save into its difficulty's slot
+    const legacy = storage.getLegacy();
+    if (legacy && legacy.cells && legacy.solution) {
+      const d = DIFFICULTIES[legacy.difficulty] ? legacy.difficulty : "Easy";
+      if (!saves[d]) {
+        saves[d] = {
+          cells: legacy.cells,
+          solution: legacy.solution,
+          seconds: legacy.seconds || 0,
+          mistakes: legacy.mistakes || 0,
+        };
+        saves.lastDifficulty = d;
+      }
+      storage.clearLegacy();
+      storage.setAll(saves);
+    }
+    savesRef.current = saves;
+
+    const last = saves.lastDifficulty;
+    const slot = last && saves[last];
+    if (slot && slot.cells && slot.solution) {
+      loadSlot(slot, last, "paused"); // resume deliberately: board blurred, tap play
     } else {
       newGame("Easy");
     }
-  }, [newGame]);
+  }, [newGame, loadSlot]);
 
   // Persist settings whenever they change (survives wins and new games)
   useEffect(() => {
@@ -1193,17 +1233,25 @@ function Sudoku() {
   const saveNow = useCallback(() => {
     const s = saveRef.current;
     if (!s.cells || !s.solution) return;
-    storage.set(s);
+    savesRef.current[s.difficulty] = {
+      cells: s.cells,
+      solution: s.solution,
+      seconds: s.seconds,
+      mistakes: s.mistakes,
+    };
+    savesRef.current.lastDifficulty = s.difficulty;
+    storage.setAll(savesRef.current);
   }, []);
 
-  // Save continuously while playing; clear the save once solved
+  // Save continuously while playing; clear this difficulty's slot once solved
   useEffect(() => {
     if (status === "won") {
-      storage.clear();
+      delete savesRef.current[difficulty];
+      storage.setAll(savesRef.current);
     } else if (status === "playing" || status === "paused") {
       saveNow();
     }
-  }, [cells, seconds, status, settings, autoCandidates, saveNow]);
+  }, [cells, seconds, status, difficulty, settings, autoCandidates, saveNow]);
 
   // Auto-pause (and save) when the app is backgrounded or closed
   useEffect(() => {
@@ -1424,6 +1472,26 @@ function Sudoku() {
     setSelected(null);
     setStatus("playing");
   }, []);
+
+  // Switch levels without losing progress: resume that level's saved game if
+  // one exists, otherwise generate a fresh puzzle for it.
+  const switchTo = useCallback(
+    (diff) => {
+      setMenuOpen(false);
+      if (diff === difficulty) {
+        if (statusRef.current === "won") newGame(diff);
+        return; // already on this level, just close the menu
+      }
+      saveNow(); // capture the current game before leaving
+      const slot = savesRef.current[diff];
+      if (slot && slot.cells && slot.solution) {
+        loadSlot(slot, diff, "playing");
+      } else {
+        newGame(diff);
+      }
+    },
+    [difficulty, saveNow, loadSlot, newGame]
+  );
 
   useEffect(() => {
     const onKey = (e) => {
@@ -2309,26 +2377,65 @@ function Sudoku() {
             }}
           >
             <div style={{ fontFamily: SERIF, fontSize: 22, marginBottom: 4 }}>
-              New puzzle
+              Puzzles
             </div>
             <div style={{ fontSize: 13, color: C.noteInk, marginBottom: 16 }}>
-              Your current progress will be lost.
+              Progress on every level is saved — switch freely.
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {Object.keys(DIFFICULTIES).map((d) => (
-                <button
-                  key={d}
-                  onClick={() => newGame(d)}
-                  style={{
-                    ...keyStyle,
-                    width: "100%",
-                    fontSize: 15,
-                    background: d === difficulty ? C.peer : "#FFFFFF",
-                  }}
-                >
-                  {d}
-                </button>
-              ))}
+              {Object.keys(DIFFICULTIES).map((d) => {
+                const isCurrent = d === difficulty && status !== "won";
+                const slot = savesRef.current[d];
+                const hasSave = !isCurrent && !!(slot && slot.cells && slot.solution);
+                const sub = isCurrent
+                  ? `In progress · ${formatTime(seconds)}`
+                  : hasSave
+                  ? `Resume · ${formatTime(slot.seconds || 0)}`
+                  : "New puzzle";
+                return (
+                  <div key={d} style={{ display: "flex", gap: 8 }}>
+                    <button
+                      onClick={() => switchTo(d)}
+                      style={{
+                        ...keyStyle,
+                        flex: 1,
+                        width: "auto",
+                        height: "auto",
+                        padding: "10px 0",
+                        fontSize: 15,
+                        flexDirection: "column",
+                        gap: 3,
+                        background: d === difficulty ? C.peer : "#FFFFFF",
+                      }}
+                    >
+                      <span>{d}</span>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: C.noteInk,
+                          fontWeight: 400,
+                        }}
+                      >
+                        {sub}
+                      </span>
+                    </button>
+                    {(isCurrent || hasSave) && (
+                      <button
+                        onClick={() => newGame(d)}
+                        style={{
+                          ...keyStyle,
+                          width: "auto",
+                          height: "auto",
+                          padding: "10px 14px",
+                          fontSize: 13,
+                        }}
+                      >
+                        New
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
             <button
               onClick={() => setMenuOpen(false)}
