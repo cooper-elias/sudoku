@@ -16,7 +16,7 @@
 </style>
 <script>
 // Version check: on launch, fetch the live file and hard-reload if it's newer.
-const APP_VERSION = "11";
+const APP_VERSION = "12";
 (function () {
   fetch(location.pathname, { cache: "no-store" })
     .then(function (r) { return r.text(); })
@@ -407,6 +407,48 @@ const gradeSolve = (puzzle) => {
     return false;
   };
 
+  // XY-wing: a bivalue pivot {x,y} with pincers {x,z} and {y,z} eliminates z
+  // from every cell that sees both pincers
+  const xyWing = () => {
+    const bival = [];
+    for (let i = 0; i < 81; i++) {
+      if (board[i] === 0 && bitCount(cands[i]) === 2) bival.push(i);
+    }
+    for (const pivot of bival) {
+      const pm = cands[pivot];
+      const pincers = PEERS[pivot].filter(
+        (p) =>
+          board[p] === 0 &&
+          bitCount(cands[p]) === 2 &&
+          cands[p] !== pm &&
+          bitCount(cands[p] & pm) === 1
+      );
+      for (let a = 0; a < pincers.length; a++) {
+        for (let b = a + 1; b < pincers.length; b++) {
+          const A = cands[pincers[a]];
+          const B = cands[pincers[b]];
+          if ((A & pm) === (B & pm)) continue; // must cover different pivot digits
+          const z = A & B & ~pm;
+          if (bitCount(z) !== 1) continue;
+          let elim = false;
+          for (const i of PEERS[pincers[a]]) {
+            if (i === pivot || i === pincers[b]) continue;
+            if (
+              board[i] === 0 &&
+              cands[i] & z &&
+              PEERS[pincers[b]].includes(i)
+            ) {
+              cands[i] &= ~z;
+              elim = true;
+            }
+          }
+          if (elim) return true;
+        }
+      }
+    }
+    return false;
+  };
+
   let level = 1;
   let steps2 = 0;
   let steps3 = 0;
@@ -420,7 +462,7 @@ const gradeSolve = (puzzle) => {
       steps2++;
       continue;
     }
-    if (nakedSet(3) || hiddenSet(3) || xwing()) {
+    if (nakedSet(3) || hiddenSet(3) || xwing() || xyWing()) {
       level = Math.max(level, 3);
       steps3++;
       continue;
@@ -472,7 +514,7 @@ const generateGraded = (difficulty) => {
     if (g.grade <= 0) return false;
     if (target === 1) return g.grade === 1;
     if (target === 2) return g.grade === 2 && g.steps2 <= 3;
-    if (target === 3) return g.grade === 3 || (g.grade === 2 && g.steps2 >= 5);
+    if (target === 3) return g.grade === 3 || (g.grade === 2 && g.steps2 >= 8);
     return g.grade === 4;
   };
   const tooHard = (g) => {
