@@ -16,7 +16,7 @@
 </style>
 <script>
 // Version check: on launch, fetch the live file and hard-reload if it's newer.
-const APP_VERSION = "9";
+const APP_VERSION = "10";
 (function () {
   fetch(location.pathname, { cache: "no-store" })
     .then(function (r) { return r.text(); })
@@ -833,11 +833,10 @@ function Sudoku() {
             : [...target.notes, n].sort();
         } else {
           if (target.value === n) {
-            target.value = 0;
+            target.value = 0; // candidates underneath reappear
             target.checked = null;
           } else {
-            target.value = n;
-            target.notes = [];
+            target.value = n; // notes are kept, just hidden behind the value
             target.checked = null;
             if (settings.autoClean) {
               for (const p of PEERS[selected]) {
@@ -861,8 +860,11 @@ function Sudoku() {
       if (cell.given || (cell.value === 0 && cell.notes.length === 0)) return prev;
       setHistory((h) => [...h, cloneCells(prev)]);
       const next = cloneCells(prev);
-      next[selected].value = 0;
-      next[selected].notes = [];
+      if (next[selected].value !== 0) {
+        next[selected].value = 0; // candidates underneath reappear
+      } else {
+        next[selected].notes = [];
+      }
       next[selected].checked = null;
       return next;
     });
@@ -893,7 +895,6 @@ function Sudoku() {
       setHistory((h) => [...h, cloneCells(prev)]);
       const next = cloneCells(prev);
       next[idx].value = solution[idx];
-      next[idx].notes = [];
       next[idx].checked = "correct";
       if (settings.autoClean) {
         for (const p of PEERS[idx]) {
@@ -941,7 +942,6 @@ function Sudoku() {
       setHistory((h) => [...h, cloneCells(prev)]);
       const next = cloneCells(prev);
       next[selected].value = solution[selected];
-      next[selected].notes = [];
       next[selected].checked = "correct";
       if (settings.autoClean) {
         for (const p of PEERS[selected]) {
