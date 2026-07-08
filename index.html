@@ -16,7 +16,7 @@
 </style>
 <script>
 // Version check: on launch, fetch the live file and hard-reload if it's newer.
-const APP_VERSION = "6";
+const APP_VERSION = "7";
 (function () {
   fetch(location.pathname, { cache: "no-store" })
     .then(function (r) { return r.text(); })
@@ -312,6 +312,7 @@ function Sudoku() {
     peers: true, // highlight row, column, and box of the selected cell
     matches: true, // highlight cells with the same number as the selected cell
     errors: false, // mark incorrect entries in red as you type (off = check-based)
+    autoClean: false, // remove a placed number from notes in its row/col/box
   });
   const [dims, setDims] = useState({
     w: typeof window !== "undefined" ? window.innerWidth : 390,
@@ -350,7 +351,8 @@ function Sudoku() {
   useEffect(() => {
     const savedPrefs = prefsStore.get();
     if (savedPrefs) {
-      if (savedPrefs.settings) setSettings(savedPrefs.settings);
+      if (savedPrefs.settings)
+        setSettings((s) => ({ ...s, ...savedPrefs.settings }));
       setAutoCandidates(!!savedPrefs.autoCandidates);
     }
     prefsLoadedRef.current = true;
@@ -459,8 +461,10 @@ function Sudoku() {
             target.value = n;
             target.notes = [];
             target.checked = null;
-            for (const p of PEERS[selected]) {
-              next[p].notes = next[p].notes.filter((x) => x !== n);
+            if (settings.autoClean) {
+              for (const p of PEERS[selected]) {
+                next[p].notes = next[p].notes.filter((x) => x !== n);
+              }
             }
             if (n !== solution[selected]) setMistakes((m) => m + 1);
           }
@@ -469,7 +473,7 @@ function Sudoku() {
         return next;
       });
     },
-    [selected, candidateMode, solution]
+    [selected, candidateMode, solution, settings.autoClean]
   );
 
   const erase = useCallback(() => {
@@ -513,14 +517,16 @@ function Sudoku() {
       next[idx].value = solution[idx];
       next[idx].notes = [];
       next[idx].checked = "correct";
-      for (const p of PEERS[idx]) {
-        next[p].notes = next[p].notes.filter((x) => x !== solution[idx]);
+      if (settings.autoClean) {
+        for (const p of PEERS[idx]) {
+          next[p].notes = next[p].notes.filter((x) => x !== solution[idx]);
+        }
       }
       setSelected(idx);
       if (checkWin(next)) setStatus("won");
       return next;
     });
-  }, [selected, solution]);
+  }, [selected, solution, settings.autoClean]);
 
   const checkCell = useCallback(() => {
     if (statusRef.current !== "playing" || selected === null) return;
@@ -559,13 +565,15 @@ function Sudoku() {
       next[selected].value = solution[selected];
       next[selected].notes = [];
       next[selected].checked = "correct";
-      for (const p of PEERS[selected]) {
-        next[p].notes = next[p].notes.filter((x) => x !== solution[selected]);
+      if (settings.autoClean) {
+        for (const p of PEERS[selected]) {
+          next[p].notes = next[p].notes.filter((x) => x !== solution[selected]);
+        }
       }
       if (checkWin(next)) setStatus("won");
       return next;
     });
-  }, [selected, solution]);
+  }, [selected, solution, settings.autoClean]);
 
   const revealPuzzle = useCallback(() => {
     if (statusRef.current !== "playing") return;
@@ -1245,6 +1253,11 @@ function Sudoku() {
                 key: "errors",
                 label: "Show mistakes as you type",
                 hint: "Off by default — use Check Cell / Check Puzzle instead",
+              },
+              {
+                key: "autoClean",
+                label: "Auto-remove notes",
+                hint: "Clears a placed number from notes in its row, column & box",
               },
             ].map((opt) => {
               const on = settings[opt.key];
