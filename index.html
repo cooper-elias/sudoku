@@ -16,7 +16,7 @@
 </style>
 <script>
 // Version check: on launch, fetch the live file and hard-reload if it's newer.
-const APP_VERSION = "7";
+const APP_VERSION = "8";
 (function () {
   fetch(location.pathname, { cache: "no-store" })
     .then(function (r) { return r.text(); })
@@ -690,6 +690,11 @@ function Sudoku() {
   }
 
   const boardValues = cells.map((c) => c.value);
+  const digitCounts = {};
+  for (let v = 1; v <= 9; v++) digitCounts[v] = 0;
+  for (const c of cells) {
+    if (c.value !== 0) digitCounts[c.value]++;
+  }
   const selectedValue =
     selected !== null && cells[selected].value !== 0
       ? cells[selected].value
@@ -1121,11 +1126,24 @@ function Sudoku() {
           flexShrink: 0,
         }}
       >
-        {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
-          <button key={n} style={keyStyle} onPointerDown={() => inputNumber(n)}>
-            {n}
-          </button>
-        ))}
+        {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => {
+          const done = digitCounts[n] >= 9;
+          return (
+            <button
+              key={n}
+              disabled={done}
+              style={{
+                ...keyStyle,
+                color: done ? "#C2C3C8" : C.ink,
+                background: done ? "#F4F4F6" : C.keyBg,
+                cursor: done ? "default" : "pointer",
+              }}
+              onPointerDown={() => !done && inputNumber(n)}
+            >
+              {n}
+            </button>
+          );
+        })}
         <button
           style={{ ...keyStyle, fontSize: Math.round(L.keyH * 0.6) }}
           onPointerDown={erase}
