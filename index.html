@@ -16,7 +16,7 @@
 </style>
 <script>
 // Version check: on launch, fetch the live file and hard-reload if it's newer.
-const APP_VERSION = "12";
+const APP_VERSION = "13";
 (function () {
   fetch(location.pathname, { cache: "no-store" })
     .then(function (r) { return r.text(); })
@@ -572,6 +572,380 @@ const generateGraded = (difficulty) => {
   return fallback;
 };
 
+// ---------------- Explaining solver ----------------
+// Solves from the current position just far enough to determine one cell,
+// recording every deduction needed so the step can be explained in plain
+// language. Mirrors the grader's techniques with human-readable output.
+
+const cellName = (i) => `row ${rowOf(i) + 1}, column ${colOf(i) + 1}`;
+const unitLabel = (u) =>
+  u < 9 ? `row ${u + 1}` : u < 18 ? `column ${u - 8}` : `box ${u - 17}`;
+
+const explainNextStep = (boardIn) => {
+  const board = [...boardIn];
+  const cands = new Array(81).fill(0);
+  for (let i = 0; i < 81; i++) {
+    if (board[i] !== 0) continue;
+    let m = 0x1ff;
+    for (const p of PEERS[i]) {
+      if (board[p] !== 0) m &= ~(1 << (board[p] - 1));
+    }
+    cands[i] = m;
+  }
+  const baseCands = [...cands]; // candidates before any technique eliminations
+  const prereqs = [];
+  const digitsOf = (m) => bitsOf(m).join(", ");
+
+  const singles = () => {
+    for (let i = 0; i < 81; i++) {
+      if (board[i] === 0 && bitCount(cands[i]) === 1) {
+        const d = bitsOf(cands[i])[0];
+        const fromPeers = bitsOf(0x1ff & ~baseCands[i]);
+        let explanation;
+        if (baseCands[i] === cands[i]) {
+          explanation = `Its row, column, and box already contain ${fromPeers.join(
+            ", "
+          )} — the only digit left is ${d}.`;
+        } else {
+          const byLogic = bitsOf(baseCands[i] & ~cands[i]);
+          explanation = `Its row, column, and box already contain ${fromPeers.join(
+            ", "
+          )}, and the deductions above rule out ${byLogic.join(
+            ", "
+          )} — leaving only ${d}.`;
+        }
+        return {
+          type: "place",
+          cell: i,
+          digit: d,
+          technique: "Naked single",
+          explanation,
+          prereqs,
+        };
+      }
+    }
+    for (let u = 0; u < 27; u++) {
+      const unit = UNITS[u];
+      for (let d = 1; d <= 9; d++) {
+        const bit = 1 << (d - 1);
+        let spot = -1;
+        let count = 0;
+        let present = false;
+        for (const i of unit) {
+          if (board[i] === d) {
+            present = true;
+            break;
+          }
+          if (board[i] === 0 && cands[i] & bit) {
+            count++;
+            spot = i;
+          }
+        }
+        if (!present && count === 1) {
+          const explanation = `${d} must appear somewhere in ${unitLabel(
+            u
+          )}, and this is the only open cell there that can still hold it — every other open cell in that ${
+            unitLabel(u).split(" ")[0]
+          } is blocked by a ${d} it can see${
+            prereqs.length ? ", or ruled out by the deductions above" : ""
+          }.`;
+          return {
+            type: "place",
+            cell: spot,
+            digit: d,
+            technique: "Hidden single",
+            explanation,
+            prereqs,
+          };
+        }
+      }
+    }
+    return null;
+  };
+
+  const nakedSetX = (size) => {
+    for (let u = 0; u < 27; u++) {
+      const unit = UNITS[u];
+      const open = unit.filter((i) => board[i] === 0);
+      const eligible = open.filter(
+        (i) => bitCount(cands[i]) >= 2 && bitCount(cands[i]) <= size
+      );
+      for (const combo of kCombos(eligible, size)) {
+        let mask = 0;
+        for (const i of combo) mask |= cands[i];
+        if (bitCount(mask) !== size) continue;
+        let elim = false;
+        for (const i of open) {
+          if (combo.includes(i)) continue;
+          if (cands[i] & mask) {
+            cands[i] &= ~mask;
+            elim = true;
+          }
+        }
+        if (elim) {
+          prereqs.push(
+            `Naked ${size === 2 ? "pair" : "triple"} in ${unitLabel(
+              u
+            )}: ${size} cells there can only hold ${digitsOf(
+              mask
+            )} between them, so those digits can be removed from every other cell in that ${
+              unitLabel(u).split(" ")[0]
+            }.`
+          );
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  const hiddenSetX = (size) => {
+    for (let u = 0; u < 27; u++) {
+      const unit = UNITS[u];
+      const pos = {};
+      for (let d = 1; d <= 9; d++) {
+        const bit = 1 << (d - 1);
+        const cellsIn = unit.filter((i) => board[i] === 0 && cands[i] & bit);
+        if (cellsIn.length >= 2 && cellsIn.length <= size) pos[d] = cellsIn;
+      }
+      const digits = Object.keys(pos).map(Number);
+      for (const combo of kCombos(digits, size)) {
+        const cellSet = new Set();
+        for (const d of combo) {
+          for (const i of pos[d]) cellSet.add(i);
+        }
+        if (cellSet.size !== size) continue;
+        let mask = 0;
+        for (const d of combo) mask |= 1 << (d - 1);
+        let elim = false;
+        for (const i of cellSet) {
+          if (cands[i] & ~mask) {
+            cands[i] &= mask;
+            elim = true;
+          }
+        }
+        if (elim) {
+          prereqs.push(
+            `Hidden ${size === 2 ? "pair" : "triple"} in ${unitLabel(
+              u
+            )}: ${combo.join(
+              ", "
+            )} can only fit in the same ${size} cells there, so those cells can hold nothing else.`
+          );
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  const lockedX = () => {
+    for (let b = 0; b < 9; b++) {
+      for (let d = 1; d <= 9; d++) {
+        const bit = 1 << (d - 1);
+        const cellsIn = BOXES[b].filter(
+          (i) => board[i] === 0 && cands[i] & bit
+        );
+        if (cellsIn.length < 2) continue;
+        const rows = new Set(cellsIn.map(rowOf));
+        if (rows.size === 1) {
+          const r = [...rows][0];
+          let elim = false;
+          for (const i of ROWS[r]) {
+            if (boxOf(i) !== b && board[i] === 0 && cands[i] & bit) {
+              cands[i] &= ~bit;
+              elim = true;
+            }
+          }
+          if (elim) {
+            prereqs.push(
+              `Locked candidates: inside box ${
+                b + 1
+              }, every possible spot for ${d} sits in row ${
+                r + 1
+              }, so ${d} can be removed from the rest of that row.`
+            );
+            return true;
+          }
+        }
+        const cols = new Set(cellsIn.map(colOf));
+        if (cols.size === 1) {
+          const c = [...cols][0];
+          let elim = false;
+          for (const i of COLS[c]) {
+            if (boxOf(i) !== b && board[i] === 0 && cands[i] & bit) {
+              cands[i] &= ~bit;
+              elim = true;
+            }
+          }
+          if (elim) {
+            prereqs.push(
+              `Locked candidates: inside box ${
+                b + 1
+              }, every possible spot for ${d} sits in column ${
+                c + 1
+              }, so ${d} can be removed from the rest of that column.`
+            );
+            return true;
+          }
+        }
+      }
+    }
+    for (const [lines, isRow] of [
+      [ROWS, true],
+      [COLS, false],
+    ]) {
+      for (let li = 0; li < 9; li++) {
+        for (let d = 1; d <= 9; d++) {
+          const bit = 1 << (d - 1);
+          const cellsIn = lines[li].filter(
+            (i) => board[i] === 0 && cands[i] & bit
+          );
+          if (cellsIn.length < 2) continue;
+          const boxes = new Set(cellsIn.map(boxOf));
+          if (boxes.size === 1) {
+            const b = [...boxes][0];
+            let elim = false;
+            for (const i of BOXES[b]) {
+              const onLine = isRow ? rowOf(i) === li : colOf(i) === li;
+              if (!onLine && board[i] === 0 && cands[i] & bit) {
+                cands[i] &= ~bit;
+                elim = true;
+              }
+            }
+            if (elim) {
+              prereqs.push(
+                `Locked candidates: in ${
+                  isRow ? "row" : "column"
+                } ${li + 1}, every possible spot for ${d} falls inside box ${
+                  b + 1
+                }, so ${d} can be removed from the rest of that box.`
+              );
+              return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  const xwingX = () => {
+    for (let d = 1; d <= 9; d++) {
+      const bit = 1 << (d - 1);
+      for (const byRows of [true, false]) {
+        const linePos = [];
+        for (let a = 0; a < 9; a++) {
+          const positions = [];
+          for (let b = 0; b < 9; b++) {
+            const i = byRows ? a * 9 + b : b * 9 + a;
+            if (board[i] === 0 && cands[i] & bit) positions.push(b);
+          }
+          linePos.push(positions);
+        }
+        for (let a1 = 0; a1 < 9; a1++) {
+          if (linePos[a1].length !== 2) continue;
+          for (let a2 = a1 + 1; a2 < 9; a2++) {
+            if (linePos[a2].length !== 2) continue;
+            if (
+              linePos[a1][0] !== linePos[a2][0] ||
+              linePos[a1][1] !== linePos[a2][1]
+            )
+              continue;
+            let elim = false;
+            for (const b of linePos[a1]) {
+              for (let a = 0; a < 9; a++) {
+                if (a === a1 || a === a2) continue;
+                const i = byRows ? a * 9 + b : b * 9 + a;
+                if (board[i] === 0 && cands[i] & bit) {
+                  cands[i] &= ~bit;
+                  elim = true;
+                }
+              }
+            }
+            if (elim) {
+              const kind = byRows ? "rows" : "columns";
+              const cross = byRows ? "columns" : "rows";
+              prereqs.push(
+                `X-wing on ${d}: in ${kind} ${a1 + 1} and ${
+                  a2 + 1
+                }, ${d} is confined to the same two ${cross} (${
+                  linePos[a1][0] + 1
+                } and ${
+                  linePos[a1][1] + 1
+                }). Whichever corners it lands on, those two ${cross} are used up — so ${d} can be removed from them everywhere else.`
+              );
+              return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  const xyWingX = () => {
+    const bival = [];
+    for (let i = 0; i < 81; i++) {
+      if (board[i] === 0 && bitCount(cands[i]) === 2) bival.push(i);
+    }
+    for (const pivot of bival) {
+      const pm = cands[pivot];
+      const pincers = PEERS[pivot].filter(
+        (p) =>
+          board[p] === 0 &&
+          bitCount(cands[p]) === 2 &&
+          cands[p] !== pm &&
+          bitCount(cands[p] & pm) === 1
+      );
+      for (let a = 0; a < pincers.length; a++) {
+        for (let b = a + 1; b < pincers.length; b++) {
+          const A = cands[pincers[a]];
+          const B = cands[pincers[b]];
+          if ((A & pm) === (B & pm)) continue;
+          const z = A & B & ~pm;
+          if (bitCount(z) !== 1) continue;
+          let elim = false;
+          for (const i of PEERS[pincers[a]]) {
+            if (i === pivot || i === pincers[b]) continue;
+            if (
+              board[i] === 0 &&
+              cands[i] & z &&
+              PEERS[pincers[b]].includes(i)
+            ) {
+              cands[i] &= ~z;
+              elim = true;
+            }
+          }
+          if (elim) {
+            const zd = bitsOf(z)[0];
+            prereqs.push(
+              `XY-wing: the cell at ${cellName(pivot)} holds only ${digitsOf(
+                pm
+              )}. Whichever it turns out to be, one of the two linked cells (${cellName(
+                pincers[a]
+              )} and ${cellName(
+                pincers[b]
+              )}) must become ${zd} — so any cell that sees both of them can't be ${zd}.`
+            );
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  for (let guard = 0; guard < 60; guard++) {
+    const s = singles();
+    if (s) return s;
+    if (nakedSetX(2) || hiddenSetX(2) || lockedX()) continue;
+    if (nakedSetX(3) || hiddenSetX(3) || xwingX() || xyWingX()) continue;
+    return { type: "stuck", prereqs };
+  }
+  return { type: "stuck", prereqs };
+};
+
 // ---------------- Helpers ----------------
 
 const makeCells = (puzzle) =>
@@ -728,6 +1102,7 @@ function Sudoku() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [hintInfo, setHintInfo] = useState(null);
   const [settings, setSettings] = useState({
     peers: true, // highlight row, column, and box of the selected cell
     matches: true, // highlight cells with the same number as the selected cell
@@ -752,6 +1127,7 @@ function Sudoku() {
     setStatus("loading");
     setMenuOpen(false);
     setMoreOpen(false);
+    setHintInfo(null);
     setTimeout(() => {
       const { puzzle, solution } = generateGraded(diff);
       setDifficulty(diff);
@@ -862,6 +1238,7 @@ function Sudoku() {
   const inputNumber = useCallback(
     (n) => {
       if (statusRef.current !== "playing" || selected === null) return;
+      setHintInfo(null);
       setCells((prev) => {
         const cell = prev[selected];
         if (cell.given) return prev;
@@ -897,6 +1274,7 @@ function Sudoku() {
 
   const erase = useCallback(() => {
     if (statusRef.current !== "playing" || selected === null) return;
+    setHintInfo(null);
     setCells((prev) => {
       const cell = prev[selected];
       if (cell.given || (cell.value === 0 && cell.notes.length === 0)) return prev;
@@ -924,30 +1302,47 @@ function Sudoku() {
   const hint = useCallback(() => {
     if (statusRef.current !== "playing") return;
     setMoreOpen(false);
-    setCells((prev) => {
-      let idx = selected;
-      if (idx === null || prev[idx].given || prev[idx].value === solution[idx]) {
-        const empties = [];
-        for (let i = 0; i < 81; i++) {
-          if (prev[i].value !== solution[i]) empties.push(i);
-        }
-        if (empties.length === 0) return prev;
-        idx = empties[Math.floor(Math.random() * empties.length)];
+    // An incorrect entry breaks the logic chain — surface it first
+    for (let i = 0; i < 81; i++) {
+      const c = cells[i];
+      if (!c.given && c.value !== 0 && c.value !== solution[i]) {
+        setSelected(i);
+        setCells((prev) => {
+          const next = cloneCells(prev);
+          next[i].checked = "wrong";
+          return next;
+        });
+        setHintInfo({ type: "error" });
+        return;
       }
+    }
+    const step = explainNextStep(cells.map((c) => c.value));
+    if (step.type !== "place") {
+      setHintInfo({ type: "stuck" });
+      return;
+    }
+    setSelected(step.cell);
+    setHintInfo({ ...step, expanded: false });
+  }, [cells, solution, settings.autoClean]);
+
+  const revealHinted = useCallback(() => {
+    if (!hintInfo || hintInfo.type !== "place") return;
+    const i = hintInfo.cell;
+    setCells((prev) => {
       setHistory((h) => [...h, cloneCells(prev)]);
       const next = cloneCells(prev);
-      next[idx].value = solution[idx];
-      next[idx].checked = "correct";
+      next[i].value = solution[i];
+      next[i].checked = "correct";
       if (settings.autoClean) {
-        for (const p of PEERS[idx]) {
-          next[p].notes = next[p].notes.filter((x) => x !== solution[idx]);
+        for (const p of PEERS[i]) {
+          next[p].notes = next[p].notes.filter((x) => x !== solution[i]);
         }
       }
-      setSelected(idx);
       if (checkWin(next)) setStatus("won");
       return next;
     });
-  }, [selected, solution, settings.autoClean]);
+    setHintInfo(null);
+  }, [hintInfo, solution, settings.autoClean]);
 
   const checkCell = useCallback(() => {
     if (statusRef.current !== "playing" || selected === null) return;
@@ -1015,6 +1410,7 @@ function Sudoku() {
 
   const resetPuzzle = useCallback(() => {
     setMoreOpen(false);
+    setHintInfo(null);
     setCells((prev) =>
       prev.map((c) =>
         c.given
@@ -1647,6 +2043,115 @@ function Sudoku() {
               Got it
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Hint panel */}
+      {hintInfo && (
+        <div
+          style={{
+            position: "fixed",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 45,
+            background: "#FFFFFF",
+            borderTop: `1px solid ${C.divider}`,
+            boxShadow: "0 -6px 24px rgba(0,0,0,0.15)",
+            padding: "16px 18px calc(16px + env(safe-area-inset-bottom))",
+            fontFamily: SANS,
+          }}
+        >
+          {hintInfo.type === "error" && (
+            <div>
+              <div style={{ fontSize: 15, lineHeight: 1.5 }}>
+                One of your entries is incorrect — it's highlighted and marked
+                in red. The logic only works from a correct position, so fix
+                that cell first.
+              </div>
+              <button
+                onClick={() => setHintInfo(null)}
+                style={{ ...keyStyle, width: "100%", fontSize: 15, marginTop: 12 }}
+              >
+                Close
+              </button>
+            </div>
+          )}
+          {hintInfo.type === "stuck" && (
+            <div>
+              <div style={{ fontSize: 15, lineHeight: 1.5 }}>
+                This position needs advanced chain logic beyond the techniques
+                I can walk through step by step. On Expert that's by design —
+                revealing a cell can break it open.
+              </div>
+              <button
+                onClick={() => setHintInfo(null)}
+                style={{ ...keyStyle, width: "100%", fontSize: 15, marginTop: 12 }}
+              >
+                Close
+              </button>
+            </div>
+          )}
+          {hintInfo.type === "place" && (
+            <div>
+              <div style={{ fontSize: 15, lineHeight: 1.5 }}>
+                The highlighted cell ({cellName(hintInfo.cell)}) can be solved
+                next{hintInfo.prereqs.length > 0
+                  ? ` — it takes ${hintInfo.prereqs.length} deduction${
+                      hintInfo.prereqs.length === 1 ? "" : "s"
+                    } to get there`
+                  : ""}.
+              </div>
+              {hintInfo.expanded && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    fontSize: 14,
+                    lineHeight: 1.5,
+                    maxHeight: "32vh",
+                    overflowY: "auto",
+                  }}
+                >
+                  {hintInfo.prereqs.map((p, idx) => (
+                    <p
+                      key={idx}
+                      style={{ margin: "0 0 8px", color: C.noteInk }}
+                    >
+                      {idx + 1}. {p}
+                    </p>
+                  ))}
+                  <p style={{ margin: 0 }}>
+                    <strong>{hintInfo.technique}:</strong>{" "}
+                    {hintInfo.explanation}
+                  </p>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                {!hintInfo.expanded && (
+                  <button
+                    onClick={() =>
+                      setHintInfo((h) => ({ ...h, expanded: true }))
+                    }
+                    style={{ ...keyStyle, flex: 1, width: "auto", fontSize: 15 }}
+                  >
+                    Explain how
+                  </button>
+                )}
+                <button
+                  onClick={revealHinted}
+                  style={{ ...keyStyle, flex: 1, width: "auto", fontSize: 15 }}
+                >
+                  Fill it in
+                </button>
+                <button
+                  onClick={() => setHintInfo(null)}
+                  style={{ ...keyStyle, flex: 1, width: "auto", fontSize: 15 }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
