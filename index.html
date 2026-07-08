@@ -16,7 +16,7 @@
 </style>
 <script>
 // Version check: on launch, fetch the live file and hard-reload if it's newer.
-const APP_VERSION = "8";
+const APP_VERSION = "9";
 (function () {
   fetch(location.pathname, { cache: "no-store" })
     .then(function (r) { return r.text(); })
@@ -125,15 +125,321 @@ const countSolutions = (board, limit = 2) => {
   return count;
 };
 
-const DIFFICULTIES = {
-  Easy: 41,
-  Medium: 34,
-  Hard: 29,
-  Expert: 25,
+// ---------------- Technique-based grader ----------------
+// Grades a puzzle by the hardest human technique required to solve it:
+//   1 = singles only                        -> Easy
+//   2 = pairs / locked candidates           -> Medium
+//   3 = triples / X-wing                    -> Hard
+//   4 = beyond all of the above             -> Expert
+
+const ROWS = [];
+const COLS = [];
+const BOXES = [];
+for (let u = 0; u < 9; u++) {
+  ROWS.push([...Array(9).keys()].map((c) => u * 9 + c));
+  COLS.push([...Array(9).keys()].map((r) => r * 9 + u));
+  const br = Math.floor(u / 3) * 3;
+  const bc = (u % 3) * 3;
+  const box = [];
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) box.push((br + r) * 9 + bc + c);
+  }
+  BOXES.push(box);
+}
+const UNITS = [...ROWS, ...COLS, ...BOXES];
+
+const bitCount = (m) => {
+  let n = 0;
+  while (m) {
+    m &= m - 1;
+    n++;
+  }
+  return n;
 };
 
-const generatePuzzle = (difficulty) => {
-  const clues = DIFFICULTIES[difficulty];
+const bitsOf = (m) => {
+  const out = [];
+  for (let d = 1; d <= 9; d++) {
+    if (m & (1 << (d - 1))) out.push(d);
+  }
+  return out;
+};
+
+const kCombos = (arr, k) => {
+  const out = [];
+  const rec = (start, combo) => {
+    if (combo.length === k) {
+      out.push([...combo]);
+      return;
+    }
+    for (let i = start; i <= arr.length - (k - combo.length); i++) {
+      combo.push(arr[i]);
+      rec(i + 1, combo);
+      combo.pop();
+    }
+  };
+  rec(0, []);
+  return out;
+};
+
+const gradeSolve = (puzzle) => {
+  const board = [...puzzle];
+  const cands = new Array(81).fill(0);
+  let remaining = 0;
+  for (let i = 0; i < 81; i++) {
+    if (board[i] !== 0) continue;
+    remaining++;
+    let m = 0x1ff;
+    for (const p of PEERS[i]) {
+      if (board[p] !== 0) m &= ~(1 << (board[p] - 1));
+    }
+    cands[i] = m;
+  }
+
+  const place = (i, d) => {
+    board[i] = d;
+    cands[i] = 0;
+    remaining--;
+    const clear = ~(1 << (d - 1));
+    for (const p of PEERS[i]) cands[p] &= clear;
+  };
+
+  // Naked single: a cell with exactly one candidate
+  const nakedSingles = () => {
+    let acted = false;
+    for (let i = 0; i < 81; i++) {
+      if (board[i] === 0 && bitCount(cands[i]) === 1) {
+        place(i, bitsOf(cands[i])[0]);
+        acted = true;
+      }
+    }
+    return acted;
+  };
+
+  // Hidden single: a digit with exactly one home in a unit
+  const hiddenSingles = () => {
+    let acted = false;
+    for (const unit of UNITS) {
+      for (let d = 1; d <= 9; d++) {
+        const bit = 1 << (d - 1);
+        let spot = -1;
+        let count = 0;
+        let present = false;
+        for (const i of unit) {
+          if (board[i] === d) {
+            present = true;
+            break;
+          }
+          if (board[i] === 0 && cands[i] & bit) {
+            count++;
+            spot = i;
+          }
+        }
+        if (!present && count === 1 && board[spot] === 0) {
+          place(spot, d);
+          acted = true;
+        }
+      }
+    }
+    return acted;
+  };
+
+  // Naked pair/triple: N cells in a unit whose combined candidates are exactly
+  // N digits eliminate those digits from the rest of the unit
+  const nakedSet = (size) => {
+    for (const unit of UNITS) {
+      const open = unit.filter((i) => board[i] === 0);
+      const eligible = open.filter(
+        (i) => bitCount(cands[i]) >= 2 && bitCount(cands[i]) <= size
+      );
+      for (const combo of kCombos(eligible, size)) {
+        let mask = 0;
+        for (const i of combo) mask |= cands[i];
+        if (bitCount(mask) !== size) continue;
+        let elim = false;
+        for (const i of open) {
+          if (combo.includes(i)) continue;
+          if (cands[i] & mask) {
+            cands[i] &= ~mask;
+            elim = true;
+          }
+        }
+        if (elim) return true;
+      }
+    }
+    return false;
+  };
+
+  // Hidden pair/triple: N digits confined to the same N cells of a unit strip
+  // all other candidates from those cells
+  const hiddenSet = (size) => {
+    for (const unit of UNITS) {
+      const pos = {};
+      for (let d = 1; d <= 9; d++) {
+        const bit = 1 << (d - 1);
+        const cells = unit.filter((i) => board[i] === 0 && cands[i] & bit);
+        if (cells.length >= 2 && cells.length <= size) pos[d] = cells;
+      }
+      const digits = Object.keys(pos).map(Number);
+      for (const combo of kCombos(digits, size)) {
+        const cellSet = new Set();
+        for (const d of combo) {
+          for (const i of pos[d]) cellSet.add(i);
+        }
+        if (cellSet.size !== size) continue;
+        let mask = 0;
+        for (const d of combo) mask |= 1 << (d - 1);
+        let elim = false;
+        for (const i of cellSet) {
+          if (cands[i] & ~mask) {
+            cands[i] &= mask;
+            elim = true;
+          }
+        }
+        if (elim) return true;
+      }
+    }
+    return false;
+  };
+
+  // Locked candidates: pointing (box -> line) and claiming (line -> box)
+  const lockedCandidates = () => {
+    for (let b = 0; b < 9; b++) {
+      for (let d = 1; d <= 9; d++) {
+        const bit = 1 << (d - 1);
+        const cells = BOXES[b].filter((i) => board[i] === 0 && cands[i] & bit);
+        if (cells.length < 2) continue;
+        const rows = new Set(cells.map(rowOf));
+        if (rows.size === 1) {
+          const r = [...rows][0];
+          let elim = false;
+          for (const i of ROWS[r]) {
+            if (boxOf(i) !== b && board[i] === 0 && cands[i] & bit) {
+              cands[i] &= ~bit;
+              elim = true;
+            }
+          }
+          if (elim) return true;
+        }
+        const cols = new Set(cells.map(colOf));
+        if (cols.size === 1) {
+          const c = [...cols][0];
+          let elim = false;
+          for (const i of COLS[c]) {
+            if (boxOf(i) !== b && board[i] === 0 && cands[i] & bit) {
+              cands[i] &= ~bit;
+              elim = true;
+            }
+          }
+          if (elim) return true;
+        }
+      }
+    }
+    for (const [lines, isRow] of [
+      [ROWS, true],
+      [COLS, false],
+    ]) {
+      for (let li = 0; li < 9; li++) {
+        for (let d = 1; d <= 9; d++) {
+          const bit = 1 << (d - 1);
+          const cells = lines[li].filter(
+            (i) => board[i] === 0 && cands[i] & bit
+          );
+          if (cells.length < 2) continue;
+          const boxes = new Set(cells.map(boxOf));
+          if (boxes.size === 1) {
+            const b = [...boxes][0];
+            let elim = false;
+            for (const i of BOXES[b]) {
+              const onLine = isRow ? rowOf(i) === li : colOf(i) === li;
+              if (!onLine && board[i] === 0 && cands[i] & bit) {
+                cands[i] &= ~bit;
+                elim = true;
+              }
+            }
+            if (elim) return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  // X-wing on rows and columns
+  const xwing = () => {
+    for (let d = 1; d <= 9; d++) {
+      const bit = 1 << (d - 1);
+      for (const byRows of [true, false]) {
+        const linePos = [];
+        for (let a = 0; a < 9; a++) {
+          const positions = [];
+          for (let b = 0; b < 9; b++) {
+            const i = byRows ? a * 9 + b : b * 9 + a;
+            if (board[i] === 0 && cands[i] & bit) positions.push(b);
+          }
+          linePos.push(positions);
+        }
+        for (let a1 = 0; a1 < 9; a1++) {
+          if (linePos[a1].length !== 2) continue;
+          for (let a2 = a1 + 1; a2 < 9; a2++) {
+            if (linePos[a2].length !== 2) continue;
+            if (
+              linePos[a1][0] !== linePos[a2][0] ||
+              linePos[a1][1] !== linePos[a2][1]
+            )
+              continue;
+            let elim = false;
+            for (const b of linePos[a1]) {
+              for (let a = 0; a < 9; a++) {
+                if (a === a1 || a === a2) continue;
+                const i = byRows ? a * 9 + b : b * 9 + a;
+                if (board[i] === 0 && cands[i] & bit) {
+                  cands[i] &= ~bit;
+                  elim = true;
+                }
+              }
+            }
+            if (elim) return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  let level = 1;
+  let steps2 = 0;
+  let steps3 = 0;
+  while (remaining > 0) {
+    for (let i = 0; i < 81; i++) {
+      if (board[i] === 0 && cands[i] === 0) return { grade: -1, steps2, steps3 };
+    }
+    if (nakedSingles() || hiddenSingles()) continue;
+    if (nakedSet(2) || hiddenSet(2) || lockedCandidates()) {
+      level = Math.max(level, 2);
+      steps2++;
+      continue;
+    }
+    if (nakedSet(3) || hiddenSet(3) || xwing()) {
+      level = Math.max(level, 3);
+      steps3++;
+      continue;
+    }
+    return { grade: 4, steps2, steps3 }; // needs logic beyond these techniques
+  }
+  return { grade: level, steps2, steps3 };
+};
+
+// ---------------- Graded generation ----------------
+
+const DIFFICULTIES = {
+  Easy: { clues: 40, grade: 1 },
+  Medium: { clues: 32, grade: 2 },
+  Hard: { clues: 28, grade: 3 },
+  Expert: { clues: 25, grade: 4 },
+};
+
+const generatePuzzle = (clues) => {
   const board = Array(81).fill(0);
   fillBoard(board);
   const solution = [...board];
@@ -150,6 +456,78 @@ const generatePuzzle = (difficulty) => {
     }
   }
   return { puzzle: board, solution };
+};
+
+// Generate a puzzle whose required-technique grade exactly matches the target.
+// Instead of blind generate-and-retry, cells are removed one at a time and any
+// removal that would push the grade PAST the target is rejected, steering each
+// attempt toward the right difficulty.
+const generateGraded = (difficulty) => {
+  const { clues, grade: target } = DIFFICULTIES[difficulty];
+  const floor = Math.max(23, clues - 6);
+
+  // A puzzle fits its tier by required techniques AND cumulative effort:
+  // Medium = light pair/locked work; Hard = triples/X-wing, or heavy pair work.
+  const fits = (g) => {
+    if (g.grade <= 0) return false;
+    if (target === 1) return g.grade === 1;
+    if (target === 2) return g.grade === 2 && g.steps2 <= 3;
+    if (target === 3) return g.grade === 3 || (g.grade === 2 && g.steps2 >= 5);
+    return g.grade === 4;
+  };
+  const tooHard = (g) => {
+    if (target === 1) return g.grade > 1;
+    if (target === 2) return g.grade > 2 || g.steps2 > 3;
+    if (target === 3) return g.grade > 3;
+    return false;
+  };
+
+  let fallback = null;
+  let fallbackScore = -Infinity;
+  const maxAttempts = target === 3 ? 60 : 30;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const board = Array(81).fill(0);
+    fillBoard(board);
+    const solution = [...board];
+    let clueCount = 81;
+
+    for (const pos of shuffle([...Array(81).keys()])) {
+      if (clueCount <= floor) break;
+      const backup = board[pos];
+      board[pos] = 0;
+      if (countSolutions([...board]) !== 1) {
+        board[pos] = backup;
+        continue;
+      }
+      // Once enough cells are gone for techniques to matter, grade each
+      // removal and reject any that overshoots the target tier (Expert has
+      // no ceiling, so it digs freely).
+      if (target < 4 && clueCount - 1 <= 46) {
+        const g = gradeSolve(board);
+        if (tooHard(g)) {
+          board[pos] = backup;
+          continue;
+        }
+        clueCount--;
+        if (fits(g) && clueCount <= clues + (target === 3 ? 6 : 2)) {
+          return { puzzle: [...board], solution };
+        }
+      } else {
+        clueCount--;
+      }
+    }
+
+    const g = gradeSolve(board);
+    if (fits(g)) return { puzzle: [...board], solution };
+    // Fallback: prefer not-harder-than-target, then closeness by grade
+    const score = (tooHard(g) ? -10 : 0) - Math.abs(g.grade - target);
+    if (g.grade > 0 && score > fallbackScore) {
+      fallbackScore = score;
+      fallback = { puzzle: [...board], solution };
+    }
+  }
+  return fallback;
 };
 
 // ---------------- Helpers ----------------
@@ -333,7 +711,7 @@ function Sudoku() {
     setMenuOpen(false);
     setMoreOpen(false);
     setTimeout(() => {
-      const { puzzle, solution } = generatePuzzle(diff);
+      const { puzzle, solution } = generateGraded(diff);
       setDifficulty(diff);
       setCells(makeCells(puzzle));
       setSolution(solution);
