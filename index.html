@@ -16,7 +16,7 @@
 </style>
 <script>
 // Version check: on launch, fetch the live file and hard-reload if it's newer.
-const APP_VERSION = "14";
+const APP_VERSION = "15";
 (function () {
   fetch(location.pathname, { cache: "no-store" })
     .then(function (r) { return r.text(); })
@@ -578,8 +578,21 @@ const generateGraded = (difficulty) => {
 // language. Mirrors the grader's techniques with human-readable output.
 
 const cellName = (i) => `row ${rowOf(i) + 1}, column ${colOf(i) + 1}`;
+const BOX_NAMES = [
+  "top-left",
+  "top-middle",
+  "top-right",
+  "middle-left",
+  "center",
+  "middle-right",
+  "bottom-left",
+  "bottom-middle",
+  "bottom-right",
+];
+const boxName = (b) => `the ${BOX_NAMES[b]} box`;
 const unitLabel = (u) =>
-  u < 9 ? `row ${u + 1}` : u < 18 ? `column ${u - 8}` : `box ${u - 17}`;
+  u < 9 ? `row ${u + 1}` : u < 18 ? `column ${u - 8}` : boxName(u - 18);
+const unitKind = (u) => (u < 9 ? "row" : u < 18 ? "column" : "box");
 
 const explainNextStep = (boardIn) => {
   const board = [...boardIn];
@@ -645,7 +658,7 @@ const explainNextStep = (boardIn) => {
           const explanation = `${d} must appear somewhere in ${unitLabel(
             u
           )}, and this is the only open cell there that can still hold it — every other open cell in that ${
-            unitLabel(u).split(" ")[0]
+            unitKind(u)
           } is blocked by a ${d} it can see${
             prereqs.length ? ", or ruled out by the deductions above" : ""
           }.`;
@@ -689,7 +702,7 @@ const explainNextStep = (boardIn) => {
             )}: ${size} cells there can only hold ${digitsOf(
               mask
             )} between them, so those digits can be removed from every other cell in that ${
-              unitLabel(u).split(" ")[0]
+              unitKind(u)
             }.`
           );
           return true;
@@ -759,9 +772,9 @@ const explainNextStep = (boardIn) => {
           }
           if (elim) {
             prereqs.push(
-              `Locked candidates: inside box ${
-                b + 1
-              }, every possible spot for ${d} sits in row ${
+              `Locked candidates: inside ${boxName(
+                b
+              )}, every possible spot for ${d} sits in row ${
                 r + 1
               }, so ${d} can be removed from the rest of that row.`
             );
@@ -780,9 +793,9 @@ const explainNextStep = (boardIn) => {
           }
           if (elim) {
             prereqs.push(
-              `Locked candidates: inside box ${
-                b + 1
-              }, every possible spot for ${d} sits in column ${
+              `Locked candidates: inside ${boxName(
+                b
+              )}, every possible spot for ${d} sits in column ${
                 c + 1
               }, so ${d} can be removed from the rest of that column.`
             );
@@ -817,9 +830,9 @@ const explainNextStep = (boardIn) => {
               prereqs.push(
                 `Locked candidates: in ${
                   isRow ? "row" : "column"
-                } ${li + 1}, every possible spot for ${d} falls inside box ${
-                  b + 1
-                }, so ${d} can be removed from the rest of that box.`
+                } ${li + 1}, every possible spot for ${d} falls inside ${boxName(
+                  b
+                )}, so ${d} can be removed from the rest of that box.`
               );
               return true;
             }
