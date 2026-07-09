@@ -16,7 +16,7 @@
 </style>
 <script>
 // Version check: on launch, fetch the live file and hard-reload if it's newer.
-const APP_VERSION = "18";
+const APP_VERSION = "19";
 (function () {
   fetch(location.pathname, { cache: "no-store" })
     .then(function (r) { return r.text(); })
@@ -642,33 +642,39 @@ const explainNextStep = (boardIn) => {
   const digitsOf = (m) => bitsOf(m).join(", ");
 
   const singles = () => {
+    // Collect every available single, then pick one at random — a fixed
+    // scan order would always point hints at the top-left-most deduction.
+    const naked = [];
     for (let i = 0; i < 81; i++) {
-      if (board[i] === 0 && bitCount(cands[i]) === 1) {
-        const d = bitsOf(cands[i])[0];
-        const fromPeers = bitsOf(0x1ff & ~baseCands[i]);
-        let explanation;
-        if (baseCands[i] === cands[i]) {
-          explanation = `Its row, column, and box already contain ${fromPeers.join(
-            ", "
-          )} — the only digit left is ${d}.`;
-        } else {
-          const byLogic = bitsOf(baseCands[i] & ~cands[i]);
-          explanation = `Its row, column, and box already contain ${fromPeers.join(
-            ", "
-          )}, and the deductions above rule out ${byLogic.join(
-            ", "
-          )} — leaving only ${d}.`;
-        }
-        return {
-          type: "place",
-          cell: i,
-          digit: d,
-          technique: "Naked single",
-          explanation,
-          prereqs,
-        };
-      }
+      if (board[i] === 0 && bitCount(cands[i]) === 1) naked.push(i);
     }
+    if (naked.length > 0) {
+      const i = naked[Math.floor(Math.random() * naked.length)];
+      const d = bitsOf(cands[i])[0];
+      const fromPeers = bitsOf(0x1ff & ~baseCands[i]);
+      let explanation;
+      if (baseCands[i] === cands[i]) {
+        explanation = `Its row, column, and box already contain ${fromPeers.join(
+          ", "
+        )} — the only digit left is ${d}.`;
+      } else {
+        const byLogic = bitsOf(baseCands[i] & ~cands[i]);
+        explanation = `Its row, column, and box already contain ${fromPeers.join(
+          ", "
+        )}, and the deductions above rule out ${byLogic.join(
+          ", "
+        )} — leaving only ${d}.`;
+      }
+      return {
+        type: "place",
+        cell: i,
+        digit: d,
+        technique: "Naked single",
+        explanation,
+        prereqs,
+      };
+    }
+    const hidden = [];
     for (let u = 0; u < 27; u++) {
       const unit = UNITS[u];
       for (let d = 1; d <= 9; d++) {
@@ -686,24 +692,26 @@ const explainNextStep = (boardIn) => {
             spot = i;
           }
         }
-        if (!present && count === 1) {
-          const explanation = `${d} must appear somewhere in ${unitLabel(
-            u
-          )}, and this is the only open cell there that can still hold it — every other open cell in that ${
-            unitKind(u)
-          } is blocked by a ${d} it can see${
-            prereqs.length ? ", or ruled out by the deductions above" : ""
-          }.`;
-          return {
-            type: "place",
-            cell: spot,
-            digit: d,
-            technique: "Hidden single",
-            explanation,
-            prereqs,
-          };
-        }
+        if (!present && count === 1) hidden.push({ spot, d, u });
       }
+    }
+    if (hidden.length > 0) {
+      const h = hidden[Math.floor(Math.random() * hidden.length)];
+      const explanation = `${h.d} must appear somewhere in ${unitLabel(
+        h.u
+      )}, and this is the only open cell there that can still hold it — every other open cell in that ${unitKind(
+        h.u
+      )} is blocked by a ${h.d} it can see${
+        prereqs.length ? ", or ruled out by the deductions above" : ""
+      }.`;
+      return {
+        type: "place",
+        cell: h.spot,
+        digit: h.d,
+        technique: "Hidden single",
+        explanation,
+        prereqs,
+      };
     }
     return null;
   };
