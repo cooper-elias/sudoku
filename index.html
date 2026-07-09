@@ -16,7 +16,7 @@
 </style>
 <script>
 // Version check: on launch, fetch the live file and hard-reload if it's newer.
-const APP_VERSION = "17";
+const APP_VERSION = "18";
 (function () {
   fetch(location.pathname, { cache: "no-store" })
     .then(function (r) { return r.text(); })
@@ -516,20 +516,28 @@ const generatePuzzle = (clues) => {
 // attempt toward the right difficulty.
 const generateGraded = (difficulty) => {
   const { clues, grade: target } = DIFFICULTIES[difficulty];
-  const floor = Math.max(23, clues - 6);
-
-  // Hard draws a fresh stall requirement per game (3, 4, or 5 separate
-  // walls) so the dig stops at different depths — otherwise the early
-  // return clusters every puzzle at the minimum bar.
+  // Per-game randomized targets so each tier has real variety instead of
+  // clustering at the minimum the early return will accept:
+  // - Easy varies its openness (36-44 clues)
+  // - Medium draws a workload bar: how many pair/locked/hidden-pair
+  //   deductions the puzzle must demand (1-4, +2 tolerance)
+  // - Hard draws a stall bar (3-5 separate walls)
+  // - Expert varies its dig depth
+  const clueGoal = target === 1 ? 36 + Math.floor(Math.random() * 9) : clues;
+  const floor =
+    target === 4
+      ? 22 + Math.floor(Math.random() * 4)
+      : Math.max(22, clueGoal - 6);
   const minStalls = target === 3 ? 3 + Math.floor(Math.random() * 3) : 0;
+  const medBar = target === 2 ? 1 + Math.floor(Math.random() * 4) : 0;
 
-  // A puzzle fits its tier by required techniques AND cumulative effort:
-  // Medium = light pair/locked work; Hard = triples/X-wing, or heavy pair
-  // work, with difficulty spread across the solve.
   const fits = (g) => {
     if (g.grade <= 0) return false;
     if (target === 1) return g.grade === 1;
-    if (target === 2) return g.grade === 2 && g.steps2 <= 3;
+    if (target === 2)
+      return (
+        g.grade === 2 && g.steps2 >= medBar && g.steps2 <= medBar + 2
+      );
     if (target === 3)
       return (
         (g.grade === 3 || (g.grade === 2 && g.steps2 >= 6)) &&
@@ -539,7 +547,7 @@ const generateGraded = (difficulty) => {
   };
   const tooHard = (g) => {
     if (target === 1) return g.grade > 1;
-    if (target === 2) return g.grade > 2 || g.steps2 > 3;
+    if (target === 2) return g.grade > 2 || g.steps2 > medBar + 2;
     if (target === 3) return g.grade > 3;
     return false;
   };
@@ -572,7 +580,7 @@ const generateGraded = (difficulty) => {
           continue;
         }
         clueCount--;
-        if (fits(g) && clueCount <= clues + (target === 3 ? 6 : 2)) {
+        if (fits(g) && clueCount <= clueGoal + (target === 3 ? 6 : 2)) {
           return { puzzle: [...board], solution };
         }
       } else {
