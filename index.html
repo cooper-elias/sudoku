@@ -16,7 +16,7 @@
 </style>
 <script>
 // Version check: on launch, fetch the live file and hard-reload if it's newer.
-const APP_VERSION = "15";
+const APP_VERSION = "16";
 (function () {
   fetch(location.pathname, { cache: "no-store" })
     .then(function (r) { return r.text(); })
@@ -452,11 +452,21 @@ const gradeSolve = (puzzle) => {
   let level = 1;
   let steps2 = 0;
   let steps3 = 0;
+  let stalls = 0; // separate points where the singles cascade halts
+  let placedSinceElim = true;
   while (remaining > 0) {
     for (let i = 0; i < 81; i++) {
-      if (board[i] === 0 && cands[i] === 0) return { grade: -1, steps2, steps3 };
+      if (board[i] === 0 && cands[i] === 0)
+        return { grade: -1, steps2, steps3, stalls };
     }
-    if (nakedSingles() || hiddenSingles()) continue;
+    if (nakedSingles() || hiddenSingles()) {
+      placedSinceElim = true;
+      continue;
+    }
+    if (placedSinceElim) {
+      stalls++;
+      placedSinceElim = false;
+    }
     if (nakedSet(2) || hiddenSet(2) || lockedCandidates()) {
       level = Math.max(level, 2);
       steps2++;
@@ -467,9 +477,9 @@ const gradeSolve = (puzzle) => {
       steps3++;
       continue;
     }
-    return { grade: 4, steps2, steps3 }; // needs logic beyond these techniques
+    return { grade: 4, steps2, steps3, stalls }; // needs deeper logic
   }
-  return { grade: level, steps2, steps3 };
+  return { grade: level, steps2, steps3, stalls };
 };
 
 // ---------------- Graded generation ----------------
@@ -514,7 +524,10 @@ const generateGraded = (difficulty) => {
     if (g.grade <= 0) return false;
     if (target === 1) return g.grade === 1;
     if (target === 2) return g.grade === 2 && g.steps2 <= 3;
-    if (target === 3) return g.grade === 3 || (g.grade === 2 && g.steps2 >= 8);
+    if (target === 3)
+      return (
+        (g.grade === 3 || (g.grade === 2 && g.steps2 >= 6)) && g.stalls >= 3
+      );
     return g.grade === 4;
   };
   const tooHard = (g) => {
@@ -562,8 +575,12 @@ const generateGraded = (difficulty) => {
 
     const g = gradeSolve(board);
     if (fits(g)) return { puzzle: [...board], solution };
-    // Fallback: prefer not-harder-than-target, then closeness by grade
-    const score = (tooHard(g) ? -10 : 0) - Math.abs(g.grade - target);
+    // Fallback: prefer not-harder-than-target, then closeness by grade,
+    // then more stalls (difficulty spread across the solve)
+    const score =
+      (tooHard(g) ? -10 : 0) -
+      Math.abs(g.grade - target) +
+      Math.min(g.stalls, 4) * 0.01;
     if (g.grade > 0 && score > fallbackScore) {
       fallbackScore = score;
       fallback = { puzzle: [...board], solution };
